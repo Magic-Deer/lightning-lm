@@ -4,14 +4,18 @@
 #define FASTER_LIO_IMU_PROCESSING_H
 
 #include <glog/logging.h>
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <fstream>
+#include <iostream>
+#include <vector>
 
 #include "common/eigen_types.h"
 #include "common/measure_group.h"
 #include "common/point_def.h"
 #include "core/lio/eskf.hpp"
+#include "core/lio/imu_filter.h"
 #include "core/lio/pose6d.h"
 #include "utils/timer.h"
 
@@ -68,6 +72,8 @@ class ImuProcess {
     int init_iter_num_ = 1;
     bool b_first_frame_ = true;
     bool imu_need_init_ = true;
+
+    IMUFilter filter_;
 };
 
 inline ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {
@@ -185,6 +191,11 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     double dt = 0;
     Vec3d acc = Vec3d::Zero();
     Vec3d gyro = Vec3d::Zero();
+
+    for (auto &imu : v_imu) {
+        auto imu_f = filter_.Filter(*imu);
+        *imu = imu_f;
+    }
 
     for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++) {
         auto &&head = *(it_imu);
