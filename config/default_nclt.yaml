@@ -60,7 +60,7 @@ system:
   pub_tf: true
 
 loop_closing:
-  loop_kf_gap: 20       # 每隔多少个关键帧检查一次
+  loop_kf_gap: 10       # 每隔多少个关键帧检查一次
   min_id_interval: 20   # 被检查的关键帧ID间隔
   closest_id_th: 20     # 历史关键帧与当前帧的ID间隔
   max_range: 60.0       # 候选帧的最大距离

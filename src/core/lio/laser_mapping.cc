@@ -66,6 +66,11 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
         enable_skip_lidar_ = skip_lidar_num_ > 0;
 
+        float height_max = yaml["roi"]["height_max"].as<float>();
+        float height_min = yaml["roi"]["height_min"].as<float>();
+
+        preprocess_->SetHeightROI(height_max, height_min);
+
     } catch (...) {
         LOG(ERROR) << "bad conversion";
         return false;
