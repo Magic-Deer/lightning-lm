@@ -43,6 +43,9 @@ class AsyncMessageProcess {
     /// 添加一条消息
     void AddMessage(const T& msg);
 
+    /// 等待当前队列和正在执行的任务全部完成
+    void Drain();
+
     /// 退出
     void Quit();
 
@@ -61,9 +64,11 @@ class AsyncMessageProcess {
     std::thread proc_;
     std::mutex mutex_;
     std::condition_variable cv_msg_;
+    std::condition_variable cv_drained_;
     std::deque<T> msg_buffer_;
     bool update_flag_ = false;
     bool exit_flag_ = false;
+    bool processing_ = false;
     size_t max_size_ = 100;  // 40
     std::string name_;
 
@@ -89,26 +94,43 @@ AsyncMessageProcess<T>::AsyncMessageProcess(AsyncMessageProcess::ProcFunc proc_f
 
 template <typename T>
 void AsyncMessageProcess<T>::Start() {
+    UL lock(mutex_);
     exit_flag_ = false;
     update_flag_ = false;
+    processing_ = false;
     proc_ = std::thread([this]() { ProcLoop(); });
 }
 
 template <typename T>
 void AsyncMessageProcess<T>::ProcLoop() {
-    while (!exit_flag_) {
-        UL lock(mutex_);
-        cv_msg_.wait(lock, [this]() { return update_flag_; });
+    while (true) {
+        std::deque<T> buffer;
+        {
+            UL lock(mutex_);
+            cv_msg_.wait(lock, [this]() { return update_flag_ || exit_flag_; });
 
-        // take the message and process it
-        auto buffer = msg_buffer_;
-        msg_buffer_.clear();
-        update_flag_ = false;
-        lock.unlock();
+            if (exit_flag_) {
+                msg_buffer_.clear();
+                update_flag_ = false;
+                processing_ = false;
+                cv_drained_.notify_all();
+                break;
+            }
 
-        // 处理之
+            buffer = msg_buffer_;
+            msg_buffer_.clear();
+            update_flag_ = false;
+            processing_ = true;
+        }
+
         for (const auto& msg : buffer) {
             custom_func_(msg);
+        }
+
+        UL lock(mutex_);
+        processing_ = false;
+        if (msg_buffer_.empty() && !update_flag_) {
+            cv_drained_.notify_all();
         }
     }
 }
@@ -138,14 +160,29 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
 }
 
 template <typename T>
+void AsyncMessageProcess<T>::Drain() {
+    UL lock(mutex_);
+    cv_drained_.wait(lock, [this]() { return !processing_ && msg_buffer_.empty() && !update_flag_; });
+}
+
+template <typename T>
 void AsyncMessageProcess<T>::Quit() {
-    update_flag_ = true;
-    exit_flag_ = true;
+    {
+        UL lock(mutex_);
+        update_flag_ = true;
+        exit_flag_ = true;
+    }
     cv_msg_.notify_one();
 
     if (proc_.joinable()) {
         proc_.join();
     }
+
+    UL lock(mutex_);
+    msg_buffer_.clear();
+    update_flag_ = false;
+    processing_ = false;
+    cv_drained_.notify_all();
 }
 
 }  // namespace lightning::sys

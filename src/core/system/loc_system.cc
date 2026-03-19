@@ -214,8 +214,17 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
     Vec3d angular_velocity = Vec3d::Zero();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        latest_local_odom_ = state;
-        has_local_odom_ = true;
+        if (!local_odom_history_.empty() && state.timestamp_ < local_odom_history_.back().timestamp_) {
+            LOG(WARNING) << "local odom time moved backwards, clearing history: " << state.timestamp_ << " < "
+                         << local_odom_history_.back().timestamp_;
+            local_odom_history_.clear();
+        }
+
+        local_odom_history_.push_back(state);
+        while (local_odom_history_.size() > kMaxLocalOdomHistorySize) {
+            local_odom_history_.pop_front();
+        }
+
         if (has_angular_velocity_) {
             angular_velocity = latest_angular_velocity_ - state.Getbg();
         }
@@ -231,20 +240,32 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
 }
 
 void LocSystem::HandleGlobalLoc(const loc::LocalizationResult& result) {
-    NavState local_odom;
-    {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        if (!result.valid_ || !has_local_odom_) {
-            return;
-        }
-        local_odom = latest_local_odom_;
+    if (!result.valid_ || !options_.pub_tf_ || tf_broadcaster_ == nullptr) {
+        return;
     }
 
-    if (options_.pub_tf_ && tf_broadcaster_ != nullptr) {
-        const SE3 map_to_odom = result.pose_ * local_odom.GetPose().inverse();
-        const double tf_timestamp = std::max(result.timestamp_, local_odom.timestamp_);
-        tf_broadcaster_->sendTransform(MakeTransform(map_to_odom, tf_timestamp, map_frame_, odom_frame_));
+    std::deque<NavState> local_odom_history;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        local_odom_history = local_odom_history_;
     }
+
+    if (local_odom_history.size() < 2) {
+        return;
+    }
+
+    SE3 odom_pose;
+    NavState best_match;
+    if (!math::PoseInterp<NavState>(result.timestamp_, local_odom_history,
+                                    [](const NavState& state) { return state.timestamp_; },
+                                    [](const NavState& state) { return state.GetPose(); }, odom_pose, best_match)) {
+        LOG_EVERY_N(WARNING, 50) << "failed to align local odom with global loc at t=" << result.timestamp_;
+        return;
+    }
+    (void)best_match;
+
+    const SE3 map_to_odom = result.pose_ * odom_pose.inverse();
+    tf_broadcaster_->sendTransform(MakeTransform(map_to_odom, result.timestamp_, map_frame_, odom_frame_));
 }
 
 void LocSystem::PublishLocState(const std_msgs::msg::Int32& state) {

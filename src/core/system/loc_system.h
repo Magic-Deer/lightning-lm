@@ -13,6 +13,7 @@
 #include <std_msgs/msg/int32.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <deque>
 #include <mutex>
 
 #include "livox_ros_driver2/msg/custom_msg.hpp"
@@ -89,10 +90,11 @@ class LocSystem {
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_ = nullptr;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr status_pub_ = nullptr;
 
+    static constexpr size_t kMaxLocalOdomHistorySize = 200;
+
     std::mutex state_mutex_;
-    NavState latest_local_odom_;
+    std::deque<NavState> local_odom_history_;
     Vec3d latest_angular_velocity_ = Vec3d::Zero();
-    bool has_local_odom_ = false;
     bool has_angular_velocity_ = false;
 };
 

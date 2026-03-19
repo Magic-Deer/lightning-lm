@@ -323,6 +323,11 @@ void Localization::Finish() {
 
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {
     UL lock(global_mutex_);
+
+    // Drain upstream first so pre-reset odom work cannot enqueue new localization tasks afterwards.
+    lidar_odom_proc_cloud_.Drain();
+    lidar_loc_proc_cloud_.Drain();
+
     if (pgo_) {
         pgo_->Reset();
     }
