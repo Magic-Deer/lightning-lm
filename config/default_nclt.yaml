@@ -59,6 +59,17 @@ system:
   map_path: ./data/new_map/
   pub_tf: true
 
+ros:
+  map_frame: map
+  odom_frame: odom
+  base_frame: base_link
+  odom_topic: /odom
+  initialpose_topic: /initialpose
+  status_topic: /lightning/status
+  map_topic: /map
+  publish_tf: true
+  publish_odom: true
+
 loop_closing:
   loop_kf_gap: 20       # 每隔多少个关键帧检查一次
   min_id_interval: 20   # 被检查的关键帧ID间隔

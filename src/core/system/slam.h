@@ -5,6 +5,7 @@
 #ifndef LIGHTNING_SLAM_H
 #define LIGHTNING_SLAM_H
 
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -28,6 +29,8 @@ class PangolinWindow;
 
 namespace g2p5 {
 class G2P5;
+class G2P5Map;
+using G2P5MapPtr = std::shared_ptr<G2P5Map>;
 }
 
 /**
@@ -75,6 +78,8 @@ class SlamSystem {
     void Spin();
 
    private:
+    void HandleMapUpdate(g2p5::G2P5MapPtr map);
+
     /// ros端保存地图的实现
     void SaveMap(const SaveMapService::Request::SharedPtr request, SaveMapService::Response::SharedPtr response);
 
@@ -97,10 +102,13 @@ class SlamSystem {
     std::string imu_topic_;
     std::string cloud_topic_;
     std::string livox_topic_;
+    std::string map_topic_ = "/map";
+    std::string map_frame_ = "map";
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_ = nullptr;
 };
 }  // namespace lightning
 

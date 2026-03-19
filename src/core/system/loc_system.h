@@ -5,10 +5,15 @@
 #ifndef LIGHTNING_LOC_SYSTEM_H
 #define LIGHTNING_LOC_SYSTEM_H
 
-#include <tf2_ros/transform_broadcaster.h>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/int32.hpp>
+#include <tf2_ros/transform_broadcaster.h>
+
+#include <mutex>
 
 #include "livox_ros_driver2/msg/custom_msg.hpp"
 
@@ -20,12 +25,14 @@ namespace lightning {
 
 namespace loc {
 class Localization;
+struct LocalizationResult;
 }
 
 class LocSystem {
    public:
     struct Options {
-        bool pub_tf_ = true;  // 是否发布tf
+        bool pub_tf_ = true;       // 是否发布tf
+        bool publish_odom_ = true;  // 是否发布odom
     };
 
     explicit LocSystem(Options options);
@@ -48,24 +55,45 @@ class LocSystem {
     void Spin();
 
    private:
+    void HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr& pose_msg);
+    void HandleLocalOdom(const NavState& state);
+    void HandleGlobalLoc(const loc::LocalizationResult& result);
+    void PublishLocState(const std_msgs::msg::Int32& state);
+
     Options options_;
 
     std::shared_ptr<loc::Localization> loc_ = nullptr;  // 定位接口
 
-    std::atomic_bool loc_started_ = false;  // 是否开启定位
     std::atomic_bool map_loaded_ = false;   // 地图是否已载入
 
     /// 实时模式下的ros2 node, subscribers
     rclcpp::Node::SharedPtr node_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
 
+    std::string map_frame_ = "map";
+    std::string odom_frame_ = "odom";
+    std::string base_frame_ = "base_link";
+
     std::string imu_topic_;
     std::string cloud_topic_;
     std::string livox_topic_;
+    std::string odom_topic_ = "/odom";
+    std::string initialpose_topic_ = "/initialpose";
+    std::string status_topic_ = "/lightning/status";
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
+    rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_sub_ = nullptr;
+
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_ = nullptr;
+    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr status_pub_ = nullptr;
+
+    std::mutex state_mutex_;
+    NavState latest_local_odom_;
+    Vec3d latest_angular_velocity_ = Vec3d::Zero();
+    bool has_local_odom_ = false;
+    bool has_angular_velocity_ = false;
 };
 
 };  // namespace lightning
