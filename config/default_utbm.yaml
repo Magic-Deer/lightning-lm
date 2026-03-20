@@ -33,6 +33,8 @@ fasterlio:
   extrinsic_R: [ 1, 0, 0,
                  0, 1, 0,
                  0, 0, 1 ]
+  kf_dis_th: 1.0
+  kf_angle_th: 5.0
 
 
 g2p5:
