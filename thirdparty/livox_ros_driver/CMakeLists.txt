@@ -2,7 +2,7 @@
 # Copyright(c) 2020 livoxtech limited.
 
 cmake_minimum_required(VERSION 3.14)
-project(livox_ros_driver2)
+project(livox_ros_driver2 VERSION 1.0.0)
 
 # Default to C99
 if (NOT CMAKE_C_STANDARD)
@@ -21,9 +21,7 @@ if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif ()
 
 # Printf version info
-# include(cmake/version.cmake)
-project(${PROJECT_NAME} VERSION ${LIVOX_ROS_DRIVER2_VERSION} LANGUAGES CXX)
-message(STATUS "${PROJECT_NAME} version: ${LIVOX_ROS_DRIVER2_VERSION}")
+message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION}")
 
 #---------------------------------------------------------------------------------------
 # Add ROS Version MACRO
