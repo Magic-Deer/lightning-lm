@@ -92,8 +92,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
 
         loc_result_ = res;
 
-        if (tf_callback_ && loc_result_.valid_) {
-            tf_callback_(loc_result_.ToGeoMsg());
+        if (global_loc_callback_ && loc_result_.valid_) {
+            global_loc_callback_(loc_result_);
         }
 
         if (ui_) {
@@ -175,6 +175,10 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud) {
     }
 
     auto lo_state = lio_->GetState();
+
+    if (local_odom_callback_) {
+        local_odom_callback_(lo_state);
+    }
 
     lidar_loc_->ProcessLO(lo_state);
     pgo_->ProcessLidarOdom(lo_state);
@@ -319,12 +323,33 @@ void Localization::Finish() {
 
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {
     UL lock(global_mutex_);
+
+    // Drain upstream first so pre-reset odom work cannot enqueue new localization tasks afterwards.
+    lidar_odom_proc_cloud_.Drain();
+    lidar_loc_proc_cloud_.Drain();
+
+    if (pgo_) {
+        pgo_->Reset();
+    }
+
+    loc_result_ = LocalizationResult();
+
     /// 设置外部重定位的pose
     if (lidar_loc_) {
         lidar_loc_->SetInitialPose(SE3(q, t));
     }
 }
 
-void Localization::SetTFCallback(Localization::TFCallback&& callback) { tf_callback_ = callback; }
+void Localization::SetGlobalLocCallback(Localization::GlobalLocCallback&& callback) {
+    global_loc_callback_ = std::move(callback);
+}
+
+void Localization::SetLocalOdomCallback(Localization::LocalOdomCallback&& callback) {
+    local_odom_callback_ = std::move(callback);
+}
+
+void Localization::SetLocStateCallback(Localization::LocStateCallback&& callback) {
+    loc_state_callback_ = std::move(callback);
+}
 
 }  // namespace lightning::loc

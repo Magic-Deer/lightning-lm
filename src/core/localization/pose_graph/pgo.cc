@@ -238,17 +238,16 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     }
 
     // 不允许时间回退
-    static double last_lidar_loc_timestamp = -1;
-    double lidar_loc_delta_t = loc_result.timestamp_ - last_lidar_loc_timestamp;
-    if (last_lidar_loc_timestamp > 0) {
+    double lidar_loc_delta_t = loc_result.timestamp_ - last_lidar_loc_frame_timestamp_;
+    if (last_lidar_loc_frame_timestamp_ > 0) {
         if (lidar_loc_delta_t < 0) {
             LOG(ERROR) << "lidar loc 时间回退: " << lidar_loc_delta_t;
             return false;
         } else {
-            last_lidar_loc_timestamp = loc_result.timestamp_;
+            last_lidar_loc_frame_timestamp_ = loc_result.timestamp_;
         }
     } else {
-        last_lidar_loc_timestamp = loc_result.timestamp_;
+        last_lidar_loc_frame_timestamp_ = loc_result.timestamp_;
     }
 
     // 增加一个PGO Frame并触发一次PGO
@@ -312,6 +311,15 @@ std::shared_ptr<PGOFrame> PGO::GetCurrentPGOFrame() const { return impl_->curren
 bool PGO::Reset() {
     UL lock(impl_->data_mutex_);
     smoother_->Reset();
+    pose_extrapolator_.reset(new PoseExtrapolator);
+    high_freq_result_ = LocalizationResult();
+    parking_result_ = LocalizationResult();
+    localization_unusual_tag_ = false;
+    imu_interruption_tag_ = false;
+    localization_unusual_count_ = 0;
+    last_lidar_loc_time_ = 0.;
+    last_lidar_loc_frame_timestamp_ = -1.;
+    is_parking_ = false;
     return impl_->Reset();
 }
 

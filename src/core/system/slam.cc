@@ -16,6 +16,17 @@
 
 namespace lightning {
 
+namespace {
+
+std::string GetStringOr(const YAML::Node& node, const char* key, const std::string& fallback) {
+    if (node && node[key]) {
+        return node[key].as<std::string>();
+    }
+    return fallback;
+}
+
+}  // namespace
+
 SlamSystem::SlamSystem(lightning::SlamSystem::Options options) : options_(options) {
     /// handle ctrl-c
     signal(SIGINT, lightning::debug::SigHandle);
@@ -29,11 +40,14 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     }
 
     auto yaml = YAML::LoadFile(yaml_path);
+    const auto ros_config = yaml["ros"];
     options_.with_loop_closing_ = yaml["system"]["with_loop_closing"].as<bool>();
     options_.with_visualization_ = yaml["system"]["with_ui"].as<bool>();
     options_.with_2dvisualization_ = yaml["system"]["with_2dui"].as<bool>();
     options_.with_gridmap_ = yaml["system"]["with_g2p5"].as<bool>();
     options_.step_on_kf_ = yaml["system"]["step_on_kf"].as<bool>();
+    map_topic_ = GetStringOr(ros_config, "map_topic", map_topic_);
+    map_frame_ = GetStringOr(ros_config, "map_frame", map_frame_);
 
     if (options_.with_loop_closing_) {
         LOG(INFO) << "slam with loop closing";
@@ -63,19 +77,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
             lc_->SetLoopClosedCB([this]() { g2p5_->RedrawGlobalMap(); });
         }
 
-        if (options_.with_2dvisualization_) {
-            g2p5_->SetMapUpdateCallback([this](g2p5::G2P5MapPtr map) {
-                cv::Mat image = map->ToCV();
-                cv::imshow("map", image);
-
-                if (options_.step_on_kf_) {
-                    cv::waitKey(0);
-
-                } else {
-                    cv::waitKey(10);
-                }
-            });
-        }
+        g2p5_->SetMapUpdateCallback([this](g2p5::G2P5MapPtr map) { HandleMapUpdate(map); });
     }
 
     if (options_.online_mode_) {
@@ -112,6 +114,13 @@ bool SlamSystem::Init(const std::string& yaml_path) {
             livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
                 Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
             });
+
+        if (options_.with_gridmap_) {
+            rclcpp::QoS map_qos(rclcpp::KeepLast(1));
+            map_qos.reliable();
+            map_qos.transient_local();
+            map_pub_ = node_->create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic_, map_qos);
+        }
 
         savemap_service_ = node_->create_service<SaveMapService>(
             "lightning/save_map", [this](const SaveMapService::Request::SharedPtr& req,
@@ -211,7 +220,7 @@ void SlamSystem::SaveMap(const std::string& path) {
             emitter << YAML::Key << "mode" << YAML::Value << "trinary";
             emitter << YAML::Key << "width" << YAML::Value << map.info.width;
             emitter << YAML::Key << "height" << YAML::Value << map.info.height;
-            emitter << YAML::Key << "resolution" << YAML::Value << float(0.05);
+            emitter << YAML::Key << "resolution" << YAML::Value << map.info.resolution;
             std::vector<double> orig{map.info.origin.position.x, map.info.origin.position.y, 0};
             emitter << YAML::Key << "origin" << YAML::Value << orig;
             emitter << YAML::Key << "negate" << YAML::Value << 0;
@@ -229,6 +238,30 @@ void SlamSystem::SaveMap(const std::string& path) {
     }
 
     LOG(INFO) << "map saved";
+}
+
+void SlamSystem::HandleMapUpdate(g2p5::G2P5MapPtr map) {
+    if (map == nullptr) {
+        return;
+    }
+
+    if (map_pub_ != nullptr && node_ != nullptr) {
+        auto ros_map = map->ToROS();
+        ros_map.header.stamp = node_->now();
+        ros_map.header.frame_id = map_frame_;
+        map_pub_->publish(ros_map);
+    }
+
+    if (options_.with_2dvisualization_) {
+        cv::Mat image = map->ToCV();
+        cv::imshow("map", image);
+
+        if (options_.step_on_kf_) {
+            cv::waitKey(0);
+        } else {
+            cv::waitKey(10);
+        }
+    }
 }
 
 void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {

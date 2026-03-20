@@ -100,6 +100,7 @@ class PGO {
     int localization_unusual_thd_ = 10;      // 激光定位失效次数阈值
     int localization_unusual_count_ = 0;     // 定位异常次数
     double last_lidar_loc_time_ = 0.;        // 上次激光定位时间戳
+    double last_lidar_loc_frame_timestamp_ = -1.;
     bool is_parking_ = false;
 };
 

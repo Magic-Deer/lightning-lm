@@ -72,6 +72,24 @@ bool PGOImpl::Reset() {
     frames_by_id_.clear();
     current_frame_ = nullptr;
     last_frame_ = nullptr;
+    dr_pose_queue_.clear();
+    lidar_odom_pose_queue_.clear();
+    lidar_loc_pose_queue_.clear();
+    output_pose_queue_.clear();
+    result_ = LocalizationResult();
+    last_gps_time_ = 0;
+    accumulated_frame_id_ = 0;
+    invalid_lidar_num_ = 0;
+    valid_lidar_num_ = 0;
+    is_in_map_ = false;
+    gps2lidar_ = false;
+    lidar2gps_ = false;
+    lidar_odom_valid_ = true;
+    lidar_odom_conflict_with_dr_ = false;
+    lidar_odom_conflict_with_dr_cnt_ = 0;
+    lidar_odom_valid_cnt_ = 0;
+    oss.str("");
+    oss.clear();
     return true;
 }
 
