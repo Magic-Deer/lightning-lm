@@ -5,6 +5,8 @@
 #include "core/system/loc_system.h"
 
 #include <algorithm>
+#include <vector>
+
 #include <yaml-cpp/yaml.h>
 
 #include "core/lightning_math.hpp"
@@ -15,6 +17,13 @@ namespace lightning {
 
 namespace {
 
+std::string NormalizeFrameId(std::string frame_id) {
+    while (!frame_id.empty() && frame_id.front() == '/') {
+        frame_id.erase(frame_id.begin());
+    }
+    return frame_id;
+}
+
 std::string GetStringOr(const YAML::Node& node, const char* key, const std::string& fallback) {
     if (node && node[key]) {
         return node[key].as<std::string>();
@@ -22,11 +31,73 @@ std::string GetStringOr(const YAML::Node& node, const char* key, const std::stri
     return fallback;
 }
 
+std::string GetFrameOr(const YAML::Node& node, const char* key, const std::string& fallback) {
+    return NormalizeFrameId(GetStringOr(node, key, fallback));
+}
+
 bool GetBoolOr(const YAML::Node& node, const char* key, bool fallback) {
     if (node && node[key]) {
         return node[key].as<bool>();
     }
     return fallback;
+}
+
+Vec3d GetVec3Or(const YAML::Node& node, const char* key, const Vec3d& fallback) {
+    if (!(node && node[key])) {
+        return fallback;
+    }
+
+    try {
+        const auto values = node[key].as<std::vector<double>>();
+        if (values.size() != 3) {
+            LOG(WARNING) << "config " << key << " expects 3 values, got " << values.size() << ", using fallback";
+            return fallback;
+        }
+        return Vec3d(values[0], values[1], values[2]);
+    } catch (const YAML::Exception& e) {
+        LOG(WARNING) << "failed to parse " << key << ": " << e.what() << ", using fallback";
+        return fallback;
+    }
+}
+
+Quatd GetQuatOr(const YAML::Node& node, const char* key, const Quatd& fallback) {
+    if (!(node && node[key])) {
+        return fallback;
+    }
+
+    try {
+        const auto values = node[key].as<std::vector<double>>();
+        if (values.size() != 4) {
+            LOG(WARNING) << "config " << key << " expects 4 values, got " << values.size() << ", using fallback";
+            return fallback;
+        }
+
+        Quatd q(values[3], values[0], values[1], values[2]);
+        if (q.norm() < 1e-6) {
+            LOG(WARNING) << "config " << key << " has near-zero quaternion, using fallback";
+            return fallback;
+        }
+        q.normalize();
+        return q;
+    } catch (const YAML::Exception& e) {
+        LOG(WARNING) << "failed to parse " << key << ": " << e.what() << ", using fallback";
+        return fallback;
+    }
+}
+
+SE3 GetSE3Or(const YAML::Node& node, const char* key, const SE3& fallback) {
+    if (!(node && node[key])) {
+        return fallback;
+    }
+
+    const auto se3_node = node[key];
+    const Vec3d translation = GetVec3Or(se3_node, "translation", fallback.translation());
+    const Quatd rotation = GetQuatOr(se3_node, "rotation_xyzw", fallback.unit_quaternion());
+    return SE3(rotation, translation);
+}
+
+bool IsIdentity(const SE3& pose, double tolerance = 1e-9) {
+    return pose.translation().norm() < tolerance && pose.so3().log().norm() < tolerance;
 }
 
 geometry_msgs::msg::TransformStamped MakeTransform(const SE3& pose, double timestamp, const std::string& parent_frame,
@@ -45,21 +116,20 @@ geometry_msgs::msg::TransformStamped MakeTransform(const SE3& pose, double times
     return msg;
 }
 
-nav_msgs::msg::Odometry MakeOdometry(const NavState& state, const Vec3d& angular_velocity, const std::string& odom_frame,
+nav_msgs::msg::Odometry MakeOdometry(const SE3& pose, double timestamp, const Vec3d& linear_velocity,
+                                     const Vec3d& angular_velocity, const std::string& odom_frame,
                                      const std::string& base_frame) {
     nav_msgs::msg::Odometry msg;
-    msg.header.stamp = math::FromSec(state.timestamp_);
+    msg.header.stamp = math::FromSec(timestamp);
     msg.header.frame_id = odom_frame;
     msg.child_frame_id = base_frame;
-    msg.pose.pose.position.x = state.pos_.x();
-    msg.pose.pose.position.y = state.pos_.y();
-    msg.pose.pose.position.z = state.pos_.z();
-    msg.pose.pose.orientation.x = state.rot_.unit_quaternion().x();
-    msg.pose.pose.orientation.y = state.rot_.unit_quaternion().y();
-    msg.pose.pose.orientation.z = state.rot_.unit_quaternion().z();
-    msg.pose.pose.orientation.w = state.rot_.unit_quaternion().w();
-
-    const Vec3d linear_velocity = state.GetRot().inverse() * state.GetVel();
+    msg.pose.pose.position.x = pose.translation().x();
+    msg.pose.pose.position.y = pose.translation().y();
+    msg.pose.pose.position.z = pose.translation().z();
+    msg.pose.pose.orientation.x = pose.unit_quaternion().x();
+    msg.pose.pose.orientation.y = pose.unit_quaternion().y();
+    msg.pose.pose.orientation.z = pose.unit_quaternion().z();
+    msg.pose.pose.orientation.w = pose.unit_quaternion().w();
     msg.twist.twist.linear.x = linear_velocity.x();
     msg.twist.twist.linear.y = linear_velocity.y();
     msg.twist.twist.linear.z = linear_velocity.z();
@@ -89,8 +159,6 @@ bool LocSystem::Init(const std::string &yaml_path) {
 
     auto yaml = YAML::LoadFile(yaml_path);
     const auto ros_config = yaml["ros"];
-    const auto system_config = yaml["system"];
-
     std::string map_path = yaml["system"]["map_path"].as<std::string>();
 
     LOG(INFO) << "online mode, creating ros2 node ... ";
@@ -102,16 +170,23 @@ bool LocSystem::Init(const std::string &yaml_path) {
     cloud_topic_ = yaml["common"]["lidar_topic"].as<std::string>();
     livox_topic_ = yaml["common"]["livox_lidar_topic"].as<std::string>();
 
-    map_frame_ = GetStringOr(ros_config, "map_frame", map_frame_);
-    odom_frame_ = GetStringOr(ros_config, "odom_frame", odom_frame_);
-    base_frame_ = GetStringOr(ros_config, "base_frame", base_frame_);
+    map_frame_ = GetFrameOr(ros_config, "map_frame", map_frame_);
+    odom_frame_ = GetFrameOr(ros_config, "odom_frame", odom_frame_);
+    base_frame_ = GetFrameOr(ros_config, "base_frame", base_frame_);
+    tracking_frame_ = GetFrameOr(ros_config, "tracking_frame", base_frame_);
     odom_topic_ = GetStringOr(ros_config, "odom_topic", odom_topic_);
     initialpose_topic_ = GetStringOr(ros_config, "initialpose_topic", initialpose_topic_);
     status_topic_ = GetStringOr(ros_config, "status_topic", status_topic_);
-    options_.pub_tf_ = GetBoolOr(ros_config, "publish_tf",
-                                 system_config && system_config["pub_tf"] ? system_config["pub_tf"].as<bool>()
-                                                                          : options_.pub_tf_);
+    base_to_tracking_ = GetSE3Or(ros_config, "base_to_tracking", base_to_tracking_);
+    options_.publish_global_tf_ = GetBoolOr(ros_config, "publish_global_tf", options_.publish_global_tf_);
+    options_.publish_local_tf_ = GetBoolOr(ros_config, "publish_local_tf", options_.publish_local_tf_);
+    options_.publish_tracking_tf_ = GetBoolOr(ros_config, "publish_tracking_tf", options_.publish_tracking_tf_);
     options_.publish_odom_ = GetBoolOr(ros_config, "publish_odom", options_.publish_odom_);
+
+    if (base_frame_ == tracking_frame_ && !IsIdentity(base_to_tracking_)) {
+        LOG(WARNING) << "base_frame and tracking_frame are identical, ignoring non-identity base_to_tracking";
+        base_to_tracking_ = SE3();
+    }
 
     rclcpp::QoS qos(10);
 
@@ -147,8 +222,11 @@ bool LocSystem::Init(const std::string &yaml_path) {
             HandleInitialPose(pose_msg);
         });
 
-    if (options_.pub_tf_) {
+    if (options_.publish_global_tf_ || options_.publish_local_tf_) {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
+    }
+    if (options_.publish_tracking_tf_ && base_frame_ != tracking_frame_) {
+        static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(node_);
     }
 
     loc_->SetLocalOdomCallback([this](const NavState& state) { HandleLocalOdom(state); });
@@ -158,6 +236,11 @@ bool LocSystem::Init(const std::string &yaml_path) {
     bool ret = loc_->Init(yaml_path, map_path);
     map_loaded_ = ret;
     if (ret) {
+        if (static_tf_broadcaster_ != nullptr) {
+            auto tracking_tf = MakeTransform(base_to_tracking_, 0.0, base_frame_, tracking_frame_);
+            tracking_tf.header.stamp = node_->get_clock()->now();
+            static_tf_broadcaster_->sendTransform(tracking_tf);
+        }
         LOG(INFO) << "online loc node has been created.";
     }
 
@@ -198,6 +281,13 @@ void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr 
 }
 
 void LocSystem::HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr& pose_msg) {
+    const std::string frame_id = NormalizeFrameId(pose_msg->header.frame_id);
+    if (frame_id != map_frame_) {
+        LOG(WARNING) << "ignore initial pose from frame " << pose_msg->header.frame_id
+                     << ", expected " << map_frame_;
+        return;
+    }
+
     Eigen::Quaterniond q(pose_msg->pose.pose.orientation.w, pose_msg->pose.pose.orientation.x,
                          pose_msg->pose.pose.orientation.y, pose_msg->pose.pose.orientation.z);
     if (q.norm() < 1e-6) {
@@ -206,12 +296,19 @@ void LocSystem::HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceSt
         q.normalize();
     }
 
-    const Vec3d t(pose_msg->pose.pose.position.x, pose_msg->pose.pose.position.y, pose_msg->pose.pose.position.z);
-    SetInitPose(SE3(q, t));
+    const SE3 map_to_base(q, Vec3d(pose_msg->pose.pose.position.x, pose_msg->pose.pose.position.y,
+                                   pose_msg->pose.pose.position.z));
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        local_odom_history_.clear();
+    }
+
+    SetInitPose(map_to_base * base_to_tracking_);
 }
 
 void LocSystem::HandleLocalOdom(const NavState& state) {
-    Vec3d angular_velocity = Vec3d::Zero();
+    Vec3d angular_velocity_tracking = Vec3d::Zero();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (!local_odom_history_.empty() && state.timestamp_ < local_odom_history_.back().timestamp_) {
@@ -226,21 +323,31 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
         }
 
         if (has_angular_velocity_) {
-            angular_velocity = latest_angular_velocity_ - state.Getbg();
+            angular_velocity_tracking = latest_angular_velocity_ - state.Getbg();
         }
     }
 
+    const SE3 odom_to_tracking = state.GetPose();
+    const SE3 odom_to_base = odom_to_tracking * base_to_tracking_.inverse();
+    const Vec3d linear_velocity_tracking = state.GetRot().inverse() * state.GetVel();
+    const Vec3d angular_velocity_base = base_to_tracking_.so3() * angular_velocity_tracking;
+    // Apply the fixed rigid-body offset so /odom is expressed in base_frame, not tracking_frame.
+    const Vec3d linear_velocity_base =
+        base_to_tracking_.so3() * linear_velocity_tracking - angular_velocity_base.cross(base_to_tracking_.translation());
+
     if (options_.publish_odom_ && odom_pub_ != nullptr) {
-        odom_pub_->publish(MakeOdometry(state, angular_velocity, odom_frame_, base_frame_));
+        odom_pub_->publish(
+            MakeOdometry(odom_to_base, state.timestamp_, linear_velocity_base, angular_velocity_base, odom_frame_,
+                         base_frame_));
     }
 
-    if (options_.pub_tf_ && tf_broadcaster_ != nullptr) {
-        tf_broadcaster_->sendTransform(MakeTransform(state.GetPose(), state.timestamp_, odom_frame_, base_frame_));
+    if (options_.publish_local_tf_ && tf_broadcaster_ != nullptr) {
+        tf_broadcaster_->sendTransform(MakeTransform(odom_to_base, state.timestamp_, odom_frame_, base_frame_));
     }
 }
 
 void LocSystem::HandleGlobalLoc(const loc::LocalizationResult& result) {
-    if (!result.valid_ || !options_.pub_tf_ || tf_broadcaster_ == nullptr) {
+    if (!result.valid_ || !options_.publish_global_tf_ || tf_broadcaster_ == nullptr) {
         return;
     }
 
@@ -254,17 +361,18 @@ void LocSystem::HandleGlobalLoc(const loc::LocalizationResult& result) {
         return;
     }
 
-    SE3 odom_pose;
+    SE3 odom_to_tracking;
     NavState best_match;
     if (!math::PoseInterp<NavState>(result.timestamp_, local_odom_history,
                                     [](const NavState& state) { return state.timestamp_; },
-                                    [](const NavState& state) { return state.GetPose(); }, odom_pose, best_match)) {
+                                    [](const NavState& state) { return state.GetPose(); }, odom_to_tracking,
+                                    best_match)) {
         LOG_EVERY_N(WARNING, 50) << "failed to align local odom with global loc at t=" << result.timestamp_;
         return;
     }
     (void)best_match;
 
-    const SE3 map_to_odom = result.pose_ * odom_pose.inverse();
+    const SE3 map_to_odom = result.pose_ * odom_to_tracking.inverse();
     tf_broadcaster_->sendTransform(MakeTransform(map_to_odom, result.timestamp_, map_frame_, odom_frame_));
 }
 

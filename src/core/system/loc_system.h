@@ -11,6 +11,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <deque>
@@ -32,7 +33,9 @@ struct LocalizationResult;
 class LocSystem {
    public:
     struct Options {
-        bool pub_tf_ = true;       // 是否发布tf
+        bool publish_global_tf_ = true;   // 是否发布 map -> odom
+        bool publish_local_tf_ = true;    // 是否发布 odom -> base
+        bool publish_tracking_tf_ = true;  // 是否发布 base -> tracking
         bool publish_odom_ = true;  // 是否发布odom
     };
 
@@ -70,10 +73,13 @@ class LocSystem {
     /// 实时模式下的ros2 node, subscribers
     rclcpp::Node::SharedPtr node_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
+    std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_ = nullptr;
 
     std::string map_frame_ = "map";
     std::string odom_frame_ = "odom";
     std::string base_frame_ = "base_link";
+    std::string tracking_frame_ = "base_link";
+    SE3 base_to_tracking_ = SE3();
 
     std::string imu_topic_;
     std::string cloud_topic_;

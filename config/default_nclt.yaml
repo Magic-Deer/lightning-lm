@@ -63,11 +63,17 @@ ros:
   map_frame: map
   odom_frame: odom
   base_frame: base_link
+  tracking_frame: base_link
+  base_to_tracking:
+    translation: [ 0.0, 0.0, 0.0 ]
+    rotation_xyzw: [ 0.0, 0.0, 0.0, 1.0 ]
   odom_topic: /odom
   initialpose_topic: /initialpose
   status_topic: /lightning/status
   map_topic: /map
-  publish_tf: true
+  publish_global_tf: true
+  publish_local_tf: true
+  publish_tracking_tf: true
   publish_odom: true
 
 loop_closing:
