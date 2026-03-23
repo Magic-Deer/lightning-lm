@@ -146,6 +146,32 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
     imu_buffer_.emplace_back(imu);
 }
 
+void LaserMapping::RefreshImuStateFromBuffer() {
+    if (!p_imu_->IsIMUInited()) {
+        return;
+    }
+
+    UL lock(mtx_buffer_);
+    kf_imu_ = kf_;
+    double t = kf_imu_.GetX().timestamp_;
+    for (const auto &imu : imu_buffer_) {
+        if (imu->timestamp <= t) {
+            continue;
+        }
+
+        const double dt = imu->timestamp - t;
+        if (dt > 0.2) {
+            LOG_EVERY_N(WARNING, 20) << "skip stale imu gap while refreshing state, dt=" << dt;
+            kf_imu_.SetTime(imu->timestamp);
+            t = imu->timestamp;
+            continue;
+        }
+
+        kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, imu->linear_acceleration);
+        t = imu->timestamp;
+    }
+}
+
 bool LaserMapping::Run() {
     if (!SyncPackages()) {
         return false;
@@ -154,8 +180,13 @@ bool LaserMapping::Run() {
     /// IMU process, kf prediction, undistortion
     p_imu_->Process(measures_, kf_, scan_undistort_);
 
-    if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
-        LOG(WARNING) << "No point, skip this scan!";
+    if (scan_undistort_ == nullptr || scan_undistort_->empty()) {
+        if (p_imu_->IsIMUInited()) {
+            LOG_EVERY_N(WARNING, 20) << "No point, skip this scan!";
+            RefreshImuStateFromBuffer();
+        } else {
+            LOG_EVERY_N(INFO, 20) << "waiting for imu init before processing lidar";
+        }
         return false;
     }
 
@@ -173,6 +204,7 @@ bool LaserMapping::Run() {
         first_lidar_time_ = measures_.lidar_end_time_;
         state_point_.timestamp_ = lidar_end_time_;
         flg_first_scan_ = false;
+        RefreshImuStateFromBuffer();
         return true;
     }
 
@@ -187,6 +219,7 @@ bool LaserMapping::Run() {
                 ui_->UpdateScan(scan_undistort_, kf_.GetX().GetPose());
             }
 
+            RefreshImuStateFromBuffer();
             return false;
         }
     }
@@ -195,7 +228,7 @@ bool LaserMapping::Run() {
     //           << ", end: " << measures_.lidar_end_time_;
 
     if (last_lidar_time_ > 0 && (measures_.lidar_begin_time_ - last_lidar_time_) > 0.5) {
-        LOG(ERROR) << "检测到雷达断流，时长：" << (measures_.lidar_begin_time_ - last_lidar_time_);
+        LOG_EVERY_N(WARNING, 20) << "检测到雷达断流，时长：" << (measures_.lidar_begin_time_ - last_lidar_time_);
     }
 
     last_lidar_time_ = measures_.lidar_begin_time_;
@@ -208,7 +241,9 @@ bool LaserMapping::Run() {
 
     int cur_pts = scan_down_body_->size();
     if (cur_pts < 5) {
-        LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", " << scan_down_body_->size();
+        LOG_EVERY_N(WARNING, 20) << "Too few points, skip this scan! " << scan_undistort_->size() << ", "
+                                 << scan_down_body_->size();
+        RefreshImuStateFromBuffer();
         return false;
     }
     scan_down_world_->resize(cur_pts);
@@ -263,15 +298,7 @@ bool LaserMapping::Run() {
     }
 
     /// 更新kf_for_imu
-    kf_imu_ = kf_;
-    if (!measures_.imu_.empty()) {
-        double t = measures_.imu_.back()->timestamp;
-        for (auto &imu : imu_buffer_) {
-            double dt = imu->timestamp - t;
-            kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, imu->linear_acceleration);
-            t = imu->timestamp;
-        }
-    }
+    RefreshImuStateFromBuffer();
 
     if (ui_) {
         ui_->UpdateScan(scan_undistort_, state_point_.GetPose());

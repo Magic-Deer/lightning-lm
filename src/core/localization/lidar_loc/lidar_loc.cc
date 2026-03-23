@@ -172,7 +172,8 @@ bool LidarLoc::ProcessDR(const NavState& state) {
     if (!dr_pose_queue_.empty()) {
         const double last_stamp = dr_pose_queue_.back().timestamp_;
         if (state.timestamp_ < last_stamp) {
-            return false;
+            LOG_EVERY_N(WARNING, 20) << "DR时间戳回退，重置lidar_loc DR队列，delta=" << state.timestamp_ - last_stamp;
+            dr_pose_queue_.clear();
         }
     }
 

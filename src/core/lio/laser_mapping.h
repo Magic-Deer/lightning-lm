@@ -82,7 +82,7 @@ class LaserMapping {
 
     /// 获取IMU状态
     NavState GetIMUState() const {
-        if (p_imu_->IsIMUInited()) {
+        if (p_imu_->IsIMUInited() && !flg_first_scan_) {
             return kf_imu_.GetX();
         } else {
             NavState s;
@@ -108,6 +108,7 @@ class LaserMapping {
    private:
     // sync lidar with imu
     bool SyncPackages();
+    void RefreshImuStateFromBuffer();
 
     void ObsModel(NavState &s, ESKF::CustomObservationModel &obs);
 

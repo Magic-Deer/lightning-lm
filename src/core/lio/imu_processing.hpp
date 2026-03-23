@@ -208,10 +208,10 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         acc = acc_avr;
         gyro = angvel_avr;
 
-        if (dt > 0.1) {
-            LOG(ERROR) << "get abnormal dt: " << dt;
-            kf_state.SetTime((*it_imu)->timestamp);
-            break;
+        if (dt > 0.2) {
+            LOG_EVERY_N(WARNING, 20) << "get abnormal dt: " << dt;
+            kf_state.SetTime(tail->timestamp);
+            continue;
         }
 
         Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;

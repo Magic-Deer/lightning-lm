@@ -145,9 +145,8 @@ bool PGO::ProcessDR(const NavState& dr_result) {
         const double last_stamp = impl_->dr_pose_queue_.back().timestamp_;
         delta_timestamp = dr_result.timestamp_ - last_stamp;
         if (dr_result.timestamp_ < last_stamp) {
-            LOG(WARNING) << "当前DR定位的结果的时间戳应当比上一个时间戳数值大，实际相减得"
-                         << dr_result.timestamp_ - last_stamp;
-            return false;
+            LOG_EVERY_N(WARNING, 20) << "DR时间戳回退，重置DR队列，delta=" << dr_result.timestamp_ - last_stamp;
+            impl_->dr_pose_queue_.clear();
         }
     }
 
@@ -383,7 +382,8 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
     // 其他数据源时间检测imu时间
     if (!dr_pose_queue.empty() && latest_time - dr_pose_queue.back().timestamp_ > imu_interruption_time_thd_) {
         imu_interruption_tag_ = true;
-        LOG(ERROR) << "长时间未获取到DR数据, IMU存在断流, 断流时间: " << latest_time - dr_pose_queue.back().timestamp_;
+        LOG_EVERY_N(WARNING, 50) << "长时间未获取到DR数据, IMU存在断流, 断流时间: "
+                                 << latest_time - dr_pose_queue.back().timestamp_;
     } else {
         imu_interruption_tag_ = false;
     }
