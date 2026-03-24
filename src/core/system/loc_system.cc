@@ -5,6 +5,7 @@
 #include "core/system/loc_system.h"
 
 #include <algorithm>
+#include <iomanip>
 #include <vector>
 
 #include <yaml-cpp/yaml.h>
@@ -98,6 +99,10 @@ SE3 GetSE3Or(const YAML::Node& node, const char* key, const SE3& fallback) {
 
 bool IsIdentity(const SE3& pose, double tolerance = 1e-9) {
     return pose.translation().norm() < tolerance && pose.so3().log().norm() < tolerance;
+}
+
+SE3 ComputeMapToOdom(const SE3& map_to_tracking, const SE3& odom_to_tracking) {
+    return map_to_tracking * odom_to_tracking.inverse();
 }
 
 geometry_msgs::msg::TransformStamped MakeTransform(const SE3& pose, double timestamp, const std::string& parent_frame,
@@ -298,17 +303,43 @@ void LocSystem::HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceSt
 
     const SE3 map_to_base(q, Vec3d(pose_msg->pose.pose.position.x, pose_msg->pose.pose.position.y,
                                    pose_msg->pose.pose.position.z));
+    const SE3 map_to_tracking = map_to_base * base_to_tracking_;
 
+    SetInitPose(map_to_tracking);
+
+    SE3 map_to_odom;
+    double tf_timestamp = 0.0;
+    bool publish_global_tf = false;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        local_odom_history_.clear();
+        has_latest_map_to_odom_ = false;
+
+        if (has_latest_local_odom_) {
+            latest_map_to_odom_ = ComputeMapToOdom(map_to_tracking, latest_local_odom_state_.GetPose());
+            has_latest_map_to_odom_ = true;
+            has_pending_initial_pose_ = false;
+            map_to_odom = latest_map_to_odom_;
+            tf_timestamp = latest_local_odom_state_.timestamp_;
+            publish_global_tf = true;
+        } else {
+            pending_initial_pose_map_to_tracking_ = map_to_tracking;
+            has_pending_initial_pose_ = true;
+        }
     }
 
-    SetInitPose(map_to_base * base_to_tracking_);
+    if (publish_global_tf) {
+        LOG(INFO) << "applied initial pose immediately using local odom at t=" << std::fixed
+                  << std::setprecision(12) << tf_timestamp;
+        PublishGlobalTransform(map_to_odom, tf_timestamp);
+    } else {
+        LOG(INFO) << "received initial pose but local odom is not ready yet, waiting to update map->odom";
+    }
 }
 
 void LocSystem::HandleLocalOdom(const NavState& state) {
     Vec3d angular_velocity_tracking = Vec3d::Zero();
+    SE3 map_to_odom;
+    bool publish_global_tf = false;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (!local_odom_history_.empty() && state.timestamp_ < local_odom_history_.back().timestamp_) {
@@ -317,6 +348,8 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
             local_odom_history_.clear();
         }
 
+        latest_local_odom_state_ = state;
+        has_latest_local_odom_ = true;
         local_odom_history_.push_back(state);
         while (local_odom_history_.size() > kMaxLocalOdomHistorySize) {
             local_odom_history_.pop_front();
@@ -324,6 +357,17 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
 
         if (has_angular_velocity_) {
             angular_velocity_tracking = latest_angular_velocity_ - state.Getbg();
+        }
+
+        if (has_pending_initial_pose_) {
+            latest_map_to_odom_ = ComputeMapToOdom(pending_initial_pose_map_to_tracking_, state.GetPose());
+            has_latest_map_to_odom_ = true;
+            has_pending_initial_pose_ = false;
+            map_to_odom = latest_map_to_odom_;
+            publish_global_tf = true;
+        } else if (has_latest_map_to_odom_) {
+            map_to_odom = latest_map_to_odom_;
+            publish_global_tf = true;
         }
     }
 
@@ -343,6 +387,10 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
 
     if (options_.publish_local_tf_ && tf_broadcaster_ != nullptr) {
         tf_broadcaster_->sendTransform(MakeTransform(odom_to_base, state.timestamp_, odom_frame_, base_frame_));
+    }
+
+    if (publish_global_tf) {
+        PublishGlobalTransform(map_to_odom, state.timestamp_);
     }
 }
 
@@ -372,13 +420,24 @@ void LocSystem::HandleGlobalLoc(const loc::LocalizationResult& result) {
     }
     (void)best_match;
 
-    const SE3 map_to_odom = result.pose_ * odom_to_tracking.inverse();
-    tf_broadcaster_->sendTransform(MakeTransform(map_to_odom, result.timestamp_, map_frame_, odom_frame_));
+    const SE3 map_to_odom = ComputeMapToOdom(result.pose_, odom_to_tracking);
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        latest_map_to_odom_ = map_to_odom;
+        has_latest_map_to_odom_ = true;
+    }
+    PublishGlobalTransform(map_to_odom, result.timestamp_);
 }
 
 void LocSystem::PublishLocState(const std_msgs::msg::Int32& state) {
     if (status_pub_ != nullptr) {
         status_pub_->publish(state);
+    }
+}
+
+void LocSystem::PublishGlobalTransform(const SE3& map_to_odom, double timestamp) {
+    if (options_.publish_global_tf_ && tf_broadcaster_ != nullptr) {
+        tf_broadcaster_->sendTransform(MakeTransform(map_to_odom, timestamp, map_frame_, odom_frame_));
     }
 }
 

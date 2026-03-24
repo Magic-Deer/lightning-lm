@@ -57,17 +57,13 @@ PGOImpl::PGOImpl(Options options) {
     set6dnoise(lidar_odom_rel_noise_, options_.lidar_odom_pos_noise, options_.lidar_odom_ang_noise);
     set6dnoise(dr_rel_noise_, options_.dr_pos_noise, options_.dr_ang_noise);
 
-    // Setup solver
-    miao::OptimizerConfig config(miao::AlgorithmType::LEVENBERG_MARQUARDT,
-                                 miao::LinearSolverType::LINEAR_SOLVER_SPARSE_EIGEN, false);
-    config.incremental_mode_ = true;
-    config.max_vertex_size_ = options_.PGO_MAX_FRAMES;
-    optimizer_ = miao::SetupOptimizer<6, 3>(config);
+    ResetOptimizer();
 }
 
 bool PGOImpl::Reset() {
     LOG(WARNING) << "PGO is reset";
     CleanProblem();
+    ResetOptimizer();
     frames_.clear();
     frames_by_id_.clear();
     current_frame_ = nullptr;
@@ -91,6 +87,14 @@ bool PGOImpl::Reset() {
     oss.str("");
     oss.clear();
     return true;
+}
+
+void PGOImpl::ResetOptimizer() {
+    miao::OptimizerConfig config(miao::AlgorithmType::LEVENBERG_MARQUARDT,
+                                 miao::LinearSolverType::LINEAR_SOLVER_SPARSE_EIGEN, false);
+    config.incremental_mode_ = true;
+    config.max_vertex_size_ = options_.PGO_MAX_FRAMES;
+    optimizer_ = miao::SetupOptimizer<6, 3>(config);
 }
 
 void PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {

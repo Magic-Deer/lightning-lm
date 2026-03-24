@@ -63,6 +63,7 @@ class LocSystem {
     void HandleLocalOdom(const NavState& state);
     void HandleGlobalLoc(const loc::LocalizationResult& result);
     void PublishLocState(const std_msgs::msg::Int32& state);
+    void PublishGlobalTransform(const SE3& map_to_odom, double timestamp);
 
     Options options_;
 
@@ -100,6 +101,12 @@ class LocSystem {
 
     std::mutex state_mutex_;
     std::deque<NavState> local_odom_history_;
+    NavState latest_local_odom_state_;
+    bool has_latest_local_odom_ = false;
+    SE3 latest_map_to_odom_ = SE3();
+    bool has_latest_map_to_odom_ = false;
+    SE3 pending_initial_pose_map_to_tracking_ = SE3();
+    bool has_pending_initial_pose_ = false;
     Vec3d latest_angular_velocity_ = Vec3d::Zero();
     bool has_angular_velocity_ = false;
 };

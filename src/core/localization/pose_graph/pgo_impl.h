@@ -140,6 +140,8 @@ struct PGOImpl {
     // 清空优化问题
     void CleanProblem();
 
+    void ResetOptimizer();
+
     // 添加顶点
     void AddVertex();
 
