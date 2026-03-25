@@ -5,11 +5,16 @@
 #ifndef LIGHTNING_SLAM_H
 #define LIGHTNING_SLAM_H
 
+#include <builtin_interfaces/msg/time.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <mutex>
 #include <string>
+#include <tf2_ros/static_transform_broadcaster.h>
+#include <tf2_ros/transform_broadcaster.h>
 
 #include "lightning/srv/save_map.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
@@ -79,6 +84,14 @@ class SlamSystem {
 
    private:
     void HandleMapUpdate(g2p5::G2P5MapPtr map);
+    void PublishPoseTransform(const NavState& state);
+    CloudPtr TransformKeyframeCloud(const Keyframe::Ptr& keyframe) const;
+    void PublishKeyframeCloud(const Keyframe::Ptr& keyframe);
+    void PublishMapCloud();
+    void RebuildMapCloud();
+    void PublishCloud(const CloudPtr& cloud,
+                      const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& publisher,
+                      const builtin_interfaces::msg::Time& stamp) const;
 
     /// ros端保存地图的实现
     void SaveMap(const SaveMapService::Request::SharedPtr request, SaveMapService::Response::SharedPtr response);
@@ -99,16 +112,32 @@ class SlamSystem {
 
     /// 实时模式下的ros2 node, subscribers
     rclcpp::Node::SharedPtr node_;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
+    std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_ = nullptr;
+
     std::string imu_topic_;
     std::string cloud_topic_;
     std::string livox_topic_;
     std::string map_topic_ = "/map";
+    std::string keyframe_cloud_topic_ = "/lightning/slam/keyframe_cloud";
+    std::string map_cloud_topic_ = "/lightning/slam/map_cloud";
     std::string map_frame_ = "map";
+    std::string base_frame_ = "base_link";
+    std::string tracking_frame_ = "base_link";
+    SE3 base_to_tracking_ = SE3();
+    double map_cloud_voxel_size_ = 0.2;
+    bool publish_pose_tf_ = true;
+    bool publish_tracking_tf_ = true;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_ = nullptr;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr keyframe_cloud_pub_ = nullptr;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_ = nullptr;
+
+    mutable std::mutex map_cloud_mutex_;
+    CloudPtr map_cloud_{new PointCloudType()};
 };
 }  // namespace lightning
 

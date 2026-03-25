@@ -46,7 +46,7 @@ g2p5:
 
 system:
   with_loop_closing: true # 是否需要回环检测
-  with_ui: true # 是否需要3D UI
+  with_ui: false # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
   with_g2p5: true # 是否需要栅格地图
   step_on_kf: false # 是否在关键帧处暂停
@@ -71,6 +71,9 @@ ros:
   initialpose_topic: /initialpose
   status_topic: /lightning/status
   map_topic: /map
+  keyframe_cloud_topic: /lightning/slam/keyframe_cloud
+  map_cloud_topic: /lightning/slam/map_cloud
+  map_cloud_voxel_size: 0.5
   publish_global_tf: true
   publish_local_tf: true
   publish_tracking_tf: true

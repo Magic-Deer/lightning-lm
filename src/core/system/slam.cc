@@ -10,19 +10,120 @@
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
 
-#include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <opencv2/opencv.hpp>
+#include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
+#include <yaml-cpp/yaml.h>
 
 namespace lightning {
 
 namespace {
+
+std::string NormalizeFrameId(std::string frame_id) {
+    while (!frame_id.empty() && frame_id.front() == '/') {
+        frame_id.erase(frame_id.begin());
+    }
+    return frame_id;
+}
 
 std::string GetStringOr(const YAML::Node& node, const char* key, const std::string& fallback) {
     if (node && node[key]) {
         return node[key].as<std::string>();
     }
     return fallback;
+}
+
+std::string GetFrameOr(const YAML::Node& node, const char* key, const std::string& fallback) {
+    return NormalizeFrameId(GetStringOr(node, key, fallback));
+}
+
+double GetDoubleOr(const YAML::Node& node, const char* key, double fallback) {
+    if (node && node[key]) {
+        return node[key].as<double>();
+    }
+    return fallback;
+}
+
+bool GetBoolOr(const YAML::Node& node, const char* key, bool fallback) {
+    if (node && node[key]) {
+        return node[key].as<bool>();
+    }
+    return fallback;
+}
+
+Vec3d GetVec3Or(const YAML::Node& node, const char* key, const Vec3d& fallback) {
+    if (!(node && node[key])) {
+        return fallback;
+    }
+
+    try {
+        const auto values = node[key].as<std::vector<double>>();
+        if (values.size() != 3) {
+            LOG(WARNING) << "config " << key << " expects 3 values, got " << values.size() << ", using fallback";
+            return fallback;
+        }
+        return Vec3d(values[0], values[1], values[2]);
+    } catch (const YAML::Exception& e) {
+        LOG(WARNING) << "failed to parse " << key << ": " << e.what() << ", using fallback";
+        return fallback;
+    }
+}
+
+Quatd GetQuatOr(const YAML::Node& node, const char* key, const Quatd& fallback) {
+    if (!(node && node[key])) {
+        return fallback;
+    }
+
+    try {
+        const auto values = node[key].as<std::vector<double>>();
+        if (values.size() != 4) {
+            LOG(WARNING) << "config " << key << " expects 4 values, got " << values.size() << ", using fallback";
+            return fallback;
+        }
+
+        Quatd q(values[3], values[0], values[1], values[2]);
+        if (q.norm() < 1e-6) {
+            LOG(WARNING) << "config " << key << " has near-zero quaternion, using fallback";
+            return fallback;
+        }
+        q.normalize();
+        return q;
+    } catch (const YAML::Exception& e) {
+        LOG(WARNING) << "failed to parse " << key << ": " << e.what() << ", using fallback";
+        return fallback;
+    }
+}
+
+SE3 GetSE3Or(const YAML::Node& node, const char* key, const SE3& fallback) {
+    if (!(node && node[key])) {
+        return fallback;
+    }
+
+    const auto se3_node = node[key];
+    const Vec3d translation = GetVec3Or(se3_node, "translation", fallback.translation());
+    const Quatd rotation = GetQuatOr(se3_node, "rotation_xyzw", fallback.unit_quaternion());
+    return SE3(rotation, translation);
+}
+
+bool IsIdentity(const SE3& pose, double tolerance = 1e-9) {
+    return pose.translation().norm() < tolerance && pose.so3().log().norm() < tolerance;
+}
+
+geometry_msgs::msg::TransformStamped MakeTransform(const SE3& pose, double timestamp, const std::string& parent_frame,
+                                                   const std::string& child_frame) {
+    geometry_msgs::msg::TransformStamped msg;
+    msg.header.stamp = math::FromSec(timestamp);
+    msg.header.frame_id = parent_frame;
+    msg.child_frame_id = child_frame;
+    msg.transform.translation.x = pose.translation().x();
+    msg.transform.translation.y = pose.translation().y();
+    msg.transform.translation.z = pose.translation().z();
+    msg.transform.rotation.x = pose.unit_quaternion().x();
+    msg.transform.rotation.y = pose.unit_quaternion().y();
+    msg.transform.rotation.z = pose.unit_quaternion().z();
+    msg.transform.rotation.w = pose.unit_quaternion().w();
+    return msg;
 }
 
 }  // namespace
@@ -47,7 +148,20 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     options_.with_gridmap_ = yaml["system"]["with_g2p5"].as<bool>();
     options_.step_on_kf_ = yaml["system"]["step_on_kf"].as<bool>();
     map_topic_ = GetStringOr(ros_config, "map_topic", map_topic_);
-    map_frame_ = GetStringOr(ros_config, "map_frame", map_frame_);
+    map_frame_ = GetFrameOr(ros_config, "map_frame", map_frame_);
+    base_frame_ = GetFrameOr(ros_config, "base_frame", base_frame_);
+    tracking_frame_ = GetFrameOr(ros_config, "tracking_frame", base_frame_);
+    base_to_tracking_ = GetSE3Or(ros_config, "base_to_tracking", base_to_tracking_);
+    keyframe_cloud_topic_ = GetStringOr(ros_config, "keyframe_cloud_topic", keyframe_cloud_topic_);
+    map_cloud_topic_ = GetStringOr(ros_config, "map_cloud_topic", map_cloud_topic_);
+    map_cloud_voxel_size_ = GetDoubleOr(ros_config, "map_cloud_voxel_size", map_cloud_voxel_size_);
+    publish_pose_tf_ = GetBoolOr(ros_config, "publish_global_tf", publish_pose_tf_);
+    publish_tracking_tf_ = GetBoolOr(ros_config, "publish_tracking_tf", publish_tracking_tf_);
+
+    if (base_frame_ == tracking_frame_ && !IsIdentity(base_to_tracking_)) {
+        LOG(WARNING) << "base_frame and tracking_frame are identical, ignoring non-identity base_to_tracking";
+        base_to_tracking_ = SE3();
+    }
 
     if (options_.with_loop_closing_) {
         LOG(INFO) << "slam with loop closing";
@@ -55,6 +169,12 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         options.online_mode_ = options_.online_mode_;
         lc_ = std::make_shared<LoopClosing>(options);
         lc_->Init(yaml_path);
+        lc_->SetLoopClosedCB([this]() {
+            if (g2p5_ != nullptr) {
+                g2p5_->RedrawGlobalMap();
+            }
+            RebuildMapCloud();
+        });
     }
 
     if (options_.with_visualization_) {
@@ -72,11 +192,6 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         g2p5_ = std::make_shared<g2p5::G2P5>(opt);
         g2p5_->Init(yaml_path);
 
-        if (options_.with_loop_closing_) {
-            /// 当发生回环时，触发一次重绘
-            lc_->SetLoopClosedCB([this]() { g2p5_->RedrawGlobalMap(); });
-        }
-
         g2p5_->SetMapUpdateCallback([this](g2p5::G2P5MapPtr map) { HandleMapUpdate(map); });
     }
 
@@ -85,6 +200,13 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 
         /// subscribers
         node_ = std::make_shared<rclcpp::Node>("lightning_slam");
+
+        if (publish_pose_tf_) {
+            tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
+        }
+        if (publish_tracking_tf_ && base_frame_ != tracking_frame_) {
+            static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(node_);
+        }
 
         imu_topic_ = yaml["common"]["imu_topic"].as<std::string>();
         cloud_topic_ = yaml["common"]["lidar_topic"].as<std::string>();
@@ -122,9 +244,28 @@ bool SlamSystem::Init(const std::string& yaml_path) {
             map_pub_ = node_->create_publisher<nav_msgs::msg::OccupancyGrid>(map_topic_, map_qos);
         }
 
+        auto keyframe_cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
+        if (!keyframe_cloud_topic_.empty()) {
+            keyframe_cloud_pub_ =
+                node_->create_publisher<sensor_msgs::msg::PointCloud2>(keyframe_cloud_topic_, keyframe_cloud_qos);
+        }
+
+        rclcpp::QoS map_cloud_qos(rclcpp::KeepLast(1));
+        map_cloud_qos.reliable();
+        map_cloud_qos.transient_local();
+        if (!map_cloud_topic_.empty()) {
+            map_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(map_cloud_topic_, map_cloud_qos);
+        }
+
         savemap_service_ = node_->create_service<SaveMapService>(
             "lightning/save_map", [this](const SaveMapService::Request::SharedPtr& req,
                                          SaveMapService::Response::SharedPtr res) { SaveMap(req, res); });
+
+        if (static_tf_broadcaster_ != nullptr) {
+            auto tracking_tf = MakeTransform(base_to_tracking_, 0.0, base_frame_, tracking_frame_);
+            tracking_tf.header.stamp = node_->get_clock()->now();
+            static_tf_broadcaster_->sendTransform(tracking_tf);
+        }
 
         LOG(INFO) << "online slam node has been created.";
     }
@@ -264,6 +405,142 @@ void SlamSystem::HandleMapUpdate(g2p5::G2P5MapPtr map) {
     }
 }
 
+void SlamSystem::PublishPoseTransform(const NavState& state) {
+    if (!publish_pose_tf_ || tf_broadcaster_ == nullptr || !state.pose_is_ok_) {
+        return;
+    }
+
+    SE3 map_to_tracking = state.GetPose();
+    if (cur_kf_ != nullptr) {
+        map_to_tracking = cur_kf_->GetOptPose() * cur_kf_->GetLIOPose().inverse() * state.GetPose();
+    }
+
+    const SE3 map_to_base = map_to_tracking * base_to_tracking_.inverse();
+    tf_broadcaster_->sendTransform(MakeTransform(map_to_base, state.timestamp_, map_frame_, base_frame_));
+}
+
+CloudPtr SlamSystem::TransformKeyframeCloud(const Keyframe::Ptr& keyframe) const {
+    if (keyframe == nullptr) {
+        return nullptr;
+    }
+
+    auto cloud = keyframe->GetCloud();
+    if (cloud == nullptr || cloud->empty()) {
+        return nullptr;
+    }
+
+    CloudPtr transformed(new PointCloudType());
+    pcl::transformPointCloud(*cloud, *transformed, keyframe->GetOptPose().matrix());
+    transformed->is_dense = false;
+    transformed->height = 1;
+    transformed->width = transformed->size();
+    return transformed;
+}
+
+void SlamSystem::PublishCloud(const CloudPtr& cloud,
+                              const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& publisher,
+                              const builtin_interfaces::msg::Time& stamp) const {
+    if (cloud == nullptr || cloud->empty() || publisher == nullptr) {
+        return;
+    }
+
+    sensor_msgs::msg::PointCloud2 msg;
+    pcl::toROSMsg(*cloud, msg);
+    msg.header.stamp = stamp;
+    msg.header.frame_id = map_frame_;
+    publisher->publish(msg);
+}
+
+void SlamSystem::PublishMapCloud() {
+    if (node_ == nullptr || map_cloud_pub_ == nullptr) {
+        return;
+    }
+
+    UL lock(map_cloud_mutex_);
+    PublishCloud(map_cloud_, map_cloud_pub_, node_->now());
+}
+
+void SlamSystem::PublishKeyframeCloud(const Keyframe::Ptr& keyframe) {
+    if (node_ == nullptr) {
+        return;
+    }
+
+    auto transformed = TransformKeyframeCloud(keyframe);
+    if (transformed == nullptr) {
+        return;
+    }
+
+    const auto stamp = node_->now();
+    PublishCloud(transformed, keyframe_cloud_pub_, stamp);
+
+    if (map_cloud_pub_ == nullptr) {
+        return;
+    }
+
+    UL lock(map_cloud_mutex_);
+    *map_cloud_ += *transformed;
+
+    if (map_cloud_voxel_size_ > 0.0 && !map_cloud_->empty()) {
+        pcl::VoxelGrid<PointType> voxel;
+        voxel.setLeafSize(map_cloud_voxel_size_, map_cloud_voxel_size_, map_cloud_voxel_size_);
+        voxel.setInputCloud(map_cloud_);
+
+        CloudPtr filtered(new PointCloudType());
+        voxel.filter(*filtered);
+        filtered->is_dense = false;
+        filtered->height = 1;
+        filtered->width = filtered->size();
+        map_cloud_ = filtered;
+    } else {
+        map_cloud_->is_dense = false;
+        map_cloud_->height = 1;
+        map_cloud_->width = map_cloud_->size();
+    }
+
+    PublishCloud(map_cloud_, map_cloud_pub_, stamp);
+}
+
+void SlamSystem::RebuildMapCloud() {
+    if (node_ == nullptr || lio_ == nullptr || map_cloud_pub_ == nullptr) {
+        return;
+    }
+
+    auto keyframes = lio_->GetAllKeyframes();
+    CloudPtr rebuilt(new PointCloudType());
+
+    for (const auto& keyframe : keyframes) {
+        auto transformed = TransformKeyframeCloud(keyframe);
+        if (transformed == nullptr) {
+            continue;
+        }
+        *rebuilt += *transformed;
+    }
+
+    if (map_cloud_voxel_size_ > 0.0 && !rebuilt->empty()) {
+        pcl::VoxelGrid<PointType> voxel;
+        voxel.setLeafSize(map_cloud_voxel_size_, map_cloud_voxel_size_, map_cloud_voxel_size_);
+        voxel.setInputCloud(rebuilt);
+
+        CloudPtr filtered(new PointCloudType());
+        voxel.filter(*filtered);
+        filtered->is_dense = false;
+        filtered->height = 1;
+        filtered->width = filtered->size();
+        rebuilt = filtered;
+    } else {
+        rebuilt->is_dense = false;
+        rebuilt->height = 1;
+        rebuilt->width = rebuilt->size();
+    }
+
+    {
+        UL lock(map_cloud_mutex_);
+        map_cloud_ = rebuilt;
+    }
+
+    PublishMapCloud();
+}
+
 void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
     if (running_ == false) {
         return;
@@ -278,6 +555,7 @@ void SlamSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cl
 
     lio_->ProcessPointCloud2(cloud);
     lio_->Run();
+    PublishPoseTransform(lio_->GetState());
 
     auto kf = lio_->GetKeyframe();
     if (kf != cur_kf_) {
@@ -297,6 +575,8 @@ void SlamSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cl
     if (options_.with_gridmap_) {
         g2p5_->PushKeyframe(cur_kf_);
     }
+
+    PublishKeyframeCloud(cur_kf_);
 
     if (ui_) {
         ui_->UpdateKF(cur_kf_);
@@ -310,6 +590,7 @@ void SlamSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr
 
     lio_->ProcessPointCloud2(cloud);
     lio_->Run();
+    PublishPoseTransform(lio_->GetState());
 
     auto kf = lio_->GetKeyframe();
     if (kf != cur_kf_) {
@@ -329,6 +610,8 @@ void SlamSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr
     if (options_.with_gridmap_) {
         g2p5_->PushKeyframe(cur_kf_);
     }
+
+    PublishKeyframeCloud(cur_kf_);
 
     if (ui_) {
         ui_->UpdateKF(cur_kf_);
