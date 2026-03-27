@@ -48,9 +48,9 @@ g2p5:
 
 system:
   with_loop_closing: true # 是否需要回环检测
-  with_ui: false # 是否需要3D UI
+  with_ui: true # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
-  with_g2p5: true # 是否需要栅格地图
+  with_g2p5: false # 是否需要栅格地图
   step_on_kf: false # 是否在关键帧处暂停
 
   enable_lidar_loc_skip: false
@@ -65,8 +65,8 @@ ros:
   map_frame: map
   odom_frame: odom
   base_frame: base_link
-  tracking_frame: base_link  # localization only
-  base_to_tracking:  # localization only
+  tracking_frame: base_link
+  base_to_tracking:
     translation: [ 0.0, 0.0, 0.0 ]
     rotation_xyzw: [ 0.0, 0.0, 0.0, 1.0 ]
   odom_topic: /odom
@@ -76,8 +76,8 @@ ros:
   keyframe_cloud_topic: /lightning/slam/keyframe_cloud
   map_cloud_topic: /lightning/slam/map_cloud
   map_cloud_voxel_size: 0.5
-  publish_global_tf: true  # slam: map -> base_link, localization: map -> odom + odom -> base_link
-  publish_tracking_tf: true  # localization only: base_link -> tracking_frame
+  publish_global_tf: true
+  publish_tracking_tf: true
   publish_odom: true
 
 loop_closing:
