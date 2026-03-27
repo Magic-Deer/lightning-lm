@@ -184,7 +184,6 @@ bool LocSystem::Init(const std::string &yaml_path) {
     status_topic_ = GetStringOr(ros_config, "status_topic", status_topic_);
     base_to_tracking_ = GetSE3Or(ros_config, "base_to_tracking", base_to_tracking_);
     options_.publish_global_tf_ = GetBoolOr(ros_config, "publish_global_tf", options_.publish_global_tf_);
-    options_.publish_local_tf_ = GetBoolOr(ros_config, "publish_local_tf", options_.publish_local_tf_);
     options_.publish_tracking_tf_ = GetBoolOr(ros_config, "publish_tracking_tf", options_.publish_tracking_tf_);
     options_.publish_odom_ = GetBoolOr(ros_config, "publish_odom", options_.publish_odom_);
 
@@ -227,7 +226,7 @@ bool LocSystem::Init(const std::string &yaml_path) {
             HandleInitialPose(pose_msg);
         });
 
-    if (options_.publish_global_tf_ || options_.publish_local_tf_) {
+    if (options_.publish_global_tf_) {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
     }
     if (options_.publish_tracking_tf_ && base_frame_ != tracking_frame_) {
@@ -385,7 +384,7 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
                          base_frame_));
     }
 
-    if (options_.publish_local_tf_ && tf_broadcaster_ != nullptr) {
+    if (options_.publish_global_tf_ && tf_broadcaster_ != nullptr) {
         tf_broadcaster_->sendTransform(MakeTransform(odom_to_base, state.timestamp_, odom_frame_, base_frame_));
     }
 

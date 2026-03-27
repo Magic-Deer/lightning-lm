@@ -52,64 +52,6 @@ bool GetBoolOr(const YAML::Node& node, const char* key, bool fallback) {
     return fallback;
 }
 
-Vec3d GetVec3Or(const YAML::Node& node, const char* key, const Vec3d& fallback) {
-    if (!(node && node[key])) {
-        return fallback;
-    }
-
-    try {
-        const auto values = node[key].as<std::vector<double>>();
-        if (values.size() != 3) {
-            LOG(WARNING) << "config " << key << " expects 3 values, got " << values.size() << ", using fallback";
-            return fallback;
-        }
-        return Vec3d(values[0], values[1], values[2]);
-    } catch (const YAML::Exception& e) {
-        LOG(WARNING) << "failed to parse " << key << ": " << e.what() << ", using fallback";
-        return fallback;
-    }
-}
-
-Quatd GetQuatOr(const YAML::Node& node, const char* key, const Quatd& fallback) {
-    if (!(node && node[key])) {
-        return fallback;
-    }
-
-    try {
-        const auto values = node[key].as<std::vector<double>>();
-        if (values.size() != 4) {
-            LOG(WARNING) << "config " << key << " expects 4 values, got " << values.size() << ", using fallback";
-            return fallback;
-        }
-
-        Quatd q(values[3], values[0], values[1], values[2]);
-        if (q.norm() < 1e-6) {
-            LOG(WARNING) << "config " << key << " has near-zero quaternion, using fallback";
-            return fallback;
-        }
-        q.normalize();
-        return q;
-    } catch (const YAML::Exception& e) {
-        LOG(WARNING) << "failed to parse " << key << ": " << e.what() << ", using fallback";
-        return fallback;
-    }
-}
-
-SE3 GetSE3Or(const YAML::Node& node, const char* key, const SE3& fallback) {
-    if (!(node && node[key])) {
-        return fallback;
-    }
-
-    const auto se3_node = node[key];
-    const Vec3d translation = GetVec3Or(se3_node, "translation", fallback.translation());
-    const Quatd rotation = GetQuatOr(se3_node, "rotation_xyzw", fallback.unit_quaternion());
-    return SE3(rotation, translation);
-}
-
-bool IsIdentity(const SE3& pose, double tolerance = 1e-9) {
-    return pose.translation().norm() < tolerance && pose.so3().log().norm() < tolerance;
-}
-
 geometry_msgs::msg::TransformStamped MakeTransform(const SE3& pose, double timestamp, const std::string& parent_frame,
                                                    const std::string& child_frame) {
     geometry_msgs::msg::TransformStamped msg;
@@ -150,18 +92,10 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     map_topic_ = GetStringOr(ros_config, "map_topic", map_topic_);
     map_frame_ = GetFrameOr(ros_config, "map_frame", map_frame_);
     base_frame_ = GetFrameOr(ros_config, "base_frame", base_frame_);
-    tracking_frame_ = GetFrameOr(ros_config, "tracking_frame", base_frame_);
-    base_to_tracking_ = GetSE3Or(ros_config, "base_to_tracking", base_to_tracking_);
     keyframe_cloud_topic_ = GetStringOr(ros_config, "keyframe_cloud_topic", keyframe_cloud_topic_);
     map_cloud_topic_ = GetStringOr(ros_config, "map_cloud_topic", map_cloud_topic_);
     map_cloud_voxel_size_ = GetDoubleOr(ros_config, "map_cloud_voxel_size", map_cloud_voxel_size_);
-    publish_pose_tf_ = GetBoolOr(ros_config, "publish_global_tf", publish_pose_tf_);
-    publish_tracking_tf_ = GetBoolOr(ros_config, "publish_tracking_tf", publish_tracking_tf_);
-
-    if (base_frame_ == tracking_frame_ && !IsIdentity(base_to_tracking_)) {
-        LOG(WARNING) << "base_frame and tracking_frame are identical, ignoring non-identity base_to_tracking";
-        base_to_tracking_ = SE3();
-    }
+    publish_global_tf_ = GetBoolOr(ros_config, "publish_global_tf", publish_global_tf_);
 
     if (options_.with_loop_closing_) {
         LOG(INFO) << "slam with loop closing";
@@ -201,11 +135,8 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         /// subscribers
         node_ = std::make_shared<rclcpp::Node>("lightning_slam");
 
-        if (publish_pose_tf_) {
+        if (publish_global_tf_) {
             tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
-        }
-        if (publish_tracking_tf_ && base_frame_ != tracking_frame_) {
-            static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(node_);
         }
 
         imu_topic_ = yaml["common"]["imu_topic"].as<std::string>();
@@ -260,12 +191,6 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         savemap_service_ = node_->create_service<SaveMapService>(
             "lightning/save_map", [this](const SaveMapService::Request::SharedPtr& req,
                                          SaveMapService::Response::SharedPtr res) { SaveMap(req, res); });
-
-        if (static_tf_broadcaster_ != nullptr) {
-            auto tracking_tf = MakeTransform(base_to_tracking_, 0.0, base_frame_, tracking_frame_);
-            tracking_tf.header.stamp = node_->get_clock()->now();
-            static_tf_broadcaster_->sendTransform(tracking_tf);
-        }
 
         LOG(INFO) << "online slam node has been created.";
     }
@@ -406,16 +331,15 @@ void SlamSystem::HandleMapUpdate(g2p5::G2P5MapPtr map) {
 }
 
 void SlamSystem::PublishPoseTransform(const NavState& state) {
-    if (!publish_pose_tf_ || tf_broadcaster_ == nullptr || !state.pose_is_ok_) {
+    if (!publish_global_tf_ || tf_broadcaster_ == nullptr || !state.pose_is_ok_) {
         return;
     }
 
-    SE3 map_to_tracking = state.GetPose();
+    SE3 map_to_base = state.GetPose();
     if (cur_kf_ != nullptr) {
-        map_to_tracking = cur_kf_->GetOptPose() * cur_kf_->GetLIOPose().inverse() * state.GetPose();
+        map_to_base = cur_kf_->GetOptPose() * cur_kf_->GetLIOPose().inverse() * state.GetPose();
     }
 
-    const SE3 map_to_base = map_to_tracking * base_to_tracking_.inverse();
     tf_broadcaster_->sendTransform(MakeTransform(map_to_base, state.timestamp_, map_frame_, base_frame_));
 }
 

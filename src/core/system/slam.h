@@ -13,7 +13,6 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <mutex>
 #include <string>
-#include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include "lightning/srv/save_map.hpp"
@@ -113,7 +112,6 @@ class SlamSystem {
     /// 实时模式下的ros2 node, subscribers
     rclcpp::Node::SharedPtr node_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
-    std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_ = nullptr;
 
     std::string imu_topic_;
     std::string cloud_topic_;
@@ -123,11 +121,8 @@ class SlamSystem {
     std::string map_cloud_topic_ = "/lightning/slam/map_cloud";
     std::string map_frame_ = "map";
     std::string base_frame_ = "base_link";
-    std::string tracking_frame_ = "base_link";
-    SE3 base_to_tracking_ = SE3();
     double map_cloud_voxel_size_ = 0.2;
-    bool publish_pose_tf_ = true;
-    bool publish_tracking_tf_ = true;
+    bool publish_global_tf_ = true;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;

@@ -33,8 +33,7 @@ struct LocalizationResult;
 class LocSystem {
    public:
     struct Options {
-        bool publish_global_tf_ = true;   // 是否发布 map -> odom
-        bool publish_local_tf_ = true;    // 是否发布 odom -> base
+        bool publish_global_tf_ = true;    // 是否发布 map -> odom 和 odom -> base
         bool publish_tracking_tf_ = true;  // 是否发布 base -> tracking
         bool publish_odom_ = true;  // 是否发布odom
     };
