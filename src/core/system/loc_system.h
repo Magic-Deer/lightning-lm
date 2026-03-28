@@ -14,6 +14,7 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <atomic>
 #include <deque>
 #include <mutex>
 
@@ -33,9 +34,9 @@ struct LocalizationResult;
 class LocSystem {
    public:
     struct Options {
-        bool publish_global_tf_ = true;    // 是否发布 map -> odom 和 odom -> base
-        bool publish_tracking_tf_ = true;  // 是否发布 base -> tracking
-        bool publish_odom_ = true;  // 是否发布odom
+        bool publish_global_tf_ = true;  // 是否发布 map -> odom 和 odom -> base
+        bool publish_imu_tf_ = true;     // 是否发布 base -> imu
+        bool publish_odom_ = true;       // 是否发布odom
     };
 
     explicit LocSystem(Options options);
@@ -78,8 +79,8 @@ class LocSystem {
     std::string map_frame_ = "map";
     std::string odom_frame_ = "odom";
     std::string base_frame_ = "base_link";
-    std::string tracking_frame_ = "base_link";
-    SE3 base_to_tracking_ = SE3();
+    std::string imu_frame_ = "base_link";
+    SE3 base_to_imu_ = SE3();
 
     std::string imu_topic_;
     std::string cloud_topic_;
@@ -104,10 +105,11 @@ class LocSystem {
     bool has_latest_local_odom_ = false;
     SE3 latest_map_to_odom_ = SE3();
     bool has_latest_map_to_odom_ = false;
-    SE3 pending_initial_pose_map_to_tracking_ = SE3();
+    SE3 pending_initial_pose_map_to_imu_ = SE3();
     bool has_pending_initial_pose_ = false;
     Vec3d latest_angular_velocity_ = Vec3d::Zero();
     bool has_angular_velocity_ = false;
+    std::atomic_bool warned_imu_frame_mismatch_ = false;
 };
 
 };  // namespace lightning

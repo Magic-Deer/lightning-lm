@@ -66,15 +66,15 @@ ros:
   map_frame: map
   odom_frame: odom
   base_frame: base_link
-  tracking_frame: base_link  # localization only
-  base_to_tracking:  # localization only
+  imu_frame: base_link  # localization only
+  base_to_imu:  # localization only
     translation: [ 0.0, 0.0, 0.0 ]
     rotation_xyzw: [ 0.0, 0.0, 0.0, 1.0 ]
   odom_topic: /odom
   initialpose_topic: /initialpose
   status_topic: /lightning/status
   publish_global_tf: true  # slam: map -> base_link, localization: map -> odom + odom -> base_link
-  publish_tracking_tf: true  # localization only: base_link -> tracking_frame
+  publish_imu_tf: true  # localization only: base_link -> imu_frame
   publish_odom: true
 
 loop_closing:

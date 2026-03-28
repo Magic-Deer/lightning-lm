@@ -65,8 +65,8 @@ ros:
   map_frame: map
   odom_frame: odom
   base_frame: base_link
-  tracking_frame: base_link
-  base_to_tracking:
+  imu_frame: base_link
+  base_to_imu:
     translation: [ 0.0, 0.0, 0.0 ]
     rotation_xyzw: [ 0.0, 0.0, 0.0, 1.0 ]
   odom_topic: /odom
@@ -77,7 +77,7 @@ ros:
   map_cloud_topic: /lightning/slam/map_cloud
   map_cloud_voxel_size: 0.5
   publish_global_tf: true
-  publish_tracking_tf: true
+  publish_imu_tf: true
   publish_odom: true
 
 loop_closing:
