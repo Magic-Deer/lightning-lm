@@ -97,6 +97,9 @@ class LidarLoc {
     /// 使用功能点初始化
     bool InitWithFP(CloudPtr input, const SE3& fp_pose);
 
+    /// 使用外部给定pose初始化
+    bool InitWithExternalPose(CloudPtr input, const SE3& init_pose);
+
     /// 更新全局地图
     bool UpdateGlobalMap();
 
