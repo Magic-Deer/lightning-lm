@@ -292,7 +292,6 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
     loc_inited_ = YawSearch(pose_esti, fitness_score, input, output_cloud);
 
     if (loc_inited_) {
-        current_timestamp_ = math::ToSec(input->header.stamp);
         localization_result_.confidence_ = fitness_score;
         current_abs_pose_ = pose_esti;
         localization_result_.pose_ = pose_esti;
@@ -325,6 +324,63 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
         fp_init_fail_pose_vec_.emplace_back(fp_pose);
         fp_last_tried_time_ = 1e-6 * static_cast<double>(input->header.stamp);
     }
+    return loc_inited_;
+}
+
+bool LidarLoc::InitWithExternalPose(CloudPtr input, const SE3& init_pose) {
+    assert(input != nullptr && !input->empty());
+
+    double fitness_score = 0;
+    SE3 pose_esti = init_pose;
+    CloudPtr output_cloud(new PointCloudType);
+
+    // /initialpose already carries an explicit yaw. Start from that full SE3
+    // instead of reusing the FP init path that performs a full-circle yaw search.
+    Localize(pose_esti, fitness_score, input, output_cloud, false);
+
+    if (fitness_score <= options_.min_init_confidence_) {
+        pose_esti = init_pose;
+        Localize(pose_esti, fitness_score, input, output_cloud, true);
+
+        if (fitness_score > options_.min_init_confidence_) {
+            Localize(pose_esti, fitness_score, input, output_cloud, false);
+        }
+    }
+
+    loc_inited_ = fitness_score > options_.min_init_confidence_;
+
+    if (loc_inited_) {
+        localization_result_.confidence_ = fitness_score;
+        current_abs_pose_ = pose_esti;
+        localization_result_.pose_ = pose_esti;
+        localization_result_.timestamp_ = current_timestamp_;
+        localization_result_.lidar_loc_valid_ = true;
+        localization_result_.status_ = LocalizationStatus::GOOD;
+
+        last_abs_pose_set_ = true;
+        last_abs_pose_ = pose_esti;
+
+        current_score_ = fitness_score;
+        LOG(INFO) << "external init success, score: " << fitness_score
+                  << ", seed: " << init_pose.translation().transpose()
+                  << ", pose: " << pose_esti.translation().transpose();
+        map_height_ = pose_esti.translation()[2];
+
+        if (current_lo_pose_set_) {
+            last_lo_pose_ = current_lo_pose_;
+            last_lo_pose_set_ = true;
+
+            last_dr_pose_ = current_dr_pose_;
+            last_dr_pose_set_ = true;
+        }
+
+        fp_init_fail_pose_vec_.clear();
+        fp_last_tried_time_ = 0.0;
+    } else {
+        LOG(INFO) << "external init failed, score: " << fitness_score
+                  << ", seed: " << init_pose.translation().transpose();
+    }
+
     return loc_inited_;
 }
 
@@ -429,6 +485,45 @@ void LidarLoc::SetInitialPose(SE3 init_pose) {
 
     initial_pose_set_ = true;
     initial_pose_ = init_pose;
+
+    // Warm relocalization should restart the absolute-pose branch from scratch.
+    // Keep incoming LO/DR streams alive, but drop any map-frame history derived
+    // from the previous localization session.
+    last_loc_pose_ = SE3();
+    current_abs_pose_ = SE3();
+    last_abs_pose_ = SE3();
+    last_abs_pose_set_ = false;
+    current_timestamp_ = 0.0;
+    last_timestamp_ = 0.0;
+
+    last_lo_pose_ = SE3();
+    current_lo_pose_ = SE3();
+    last_lo_pose_set_ = false;
+    current_lo_pose_set_ = false;
+
+    last_dr_pose_ = SE3();
+    current_dr_pose_ = SE3();
+    last_dr_pose_set_ = false;
+    current_dr_pose_set_ = false;
+
+    lidar_loc_pose_queue_.clear();
+    ave_scores_.clear();
+    fp_init_fail_pose_vec_.clear();
+    fp_last_tried_time_ = 0.0;
+
+    current_vel_b_ = Vec3d::Zero();
+    current_vel_ = Vec3d::Zero();
+    current_score_ = 1e5;
+    match_fail_count_ = 0;
+    static_count_ = 0;
+    lo_reliable_ = true;
+    lo_reliable_cnt_ = 0;
+    parking_ = false;
+    last_dyn_upd_pose_ = TimedPose();
+
+    SetInitRltState();
+    map_->LoadOnPose(initial_pose_);
+    UpdateGlobalMap();
     LOG(INFO) << "Set initial pose is: " << initial_pose_.translation().transpose();
 }
 
@@ -478,7 +573,8 @@ void LidarLoc::Align(const CloudPtr& input) {
 
         if (initial_pose_set_) {
             /// 尝试在给定点初始化
-            if (InitWithFP(input, initial_pose_)) {
+            map_->LoadOnPose(initial_pose_);
+            if (InitWithExternalPose(input, initial_pose_)) {
                 LOG(INFO) << "init with external pose: " << initial_pose_.translation().transpose();
                 initial_pose_set_ = false;
                 return;
@@ -890,6 +986,7 @@ void LidarLoc::UpdateState(const CloudPtr& input) { last_timestamp_ = current_ti
 
 void LidarLoc::SetInitRltState() {
     UL lock(result_mutex_);
+    localization_result_ = LocalizationResult();
     localization_result_.confidence_ = 0.0;
     localization_result_.timestamp_ = current_timestamp_;
     localization_result_.lidar_loc_valid_ = false;
