@@ -15,6 +15,7 @@
 
 DEFINE_string(input_bag, "", "输入数据包");
 DEFINE_string(config, "./config/default.yaml", "配置文件");
+DEFINE_string(output_dir, "", "地图输出目录");
 
 /// 运行一个LIO前端，带可视化
 int main(int argc, char** argv) {
@@ -72,7 +73,7 @@ int main(int argc, char** argv) {
                              })
         .Go();
 
-    slam.SaveMap("");
+    slam.SaveMap(FLAGS_output_dir);
     Timer::PrintAll();
 
     LOG(INFO) << "done";
