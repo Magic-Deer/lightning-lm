@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
 
     lightning::YAML_IO yaml(FLAGS_config);
     std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
+    std::string livox_topic = yaml.GetValue<std::string>("common", "livox_lidar_topic");
     std::string imu_topic = yaml.GetValue<std::string>("common", "imu_topic");
 
     rosbag
@@ -56,7 +57,7 @@ int main(int argc, char** argv) {
                                   usleep(1000);
                                   return true;
                               })
-        .AddLivoxCloudHandle("/livox/lidar",
+        .AddLivoxCloudHandle(livox_topic,
                              [&loc](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
                                  loc.ProcessLivoxLidarMsg(cloud);
                                  usleep(1000);
