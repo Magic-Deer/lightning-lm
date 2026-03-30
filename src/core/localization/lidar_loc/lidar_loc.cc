@@ -479,6 +479,7 @@ void LidarLoc::UpdateMapThread() {
 }
 
 void LidarLoc::SetInitialPose(SE3 init_pose) {
+    // Precondition: caller has already drained/stopped Align().
     UL lock(initial_pose_mutex_);
     loc_inited_ = false;
     // map_->ClearMap();
@@ -487,7 +488,7 @@ void LidarLoc::SetInitialPose(SE3 init_pose) {
     initial_pose_ = init_pose;
 
     // Warm relocalization should restart the absolute-pose branch from scratch.
-    // Keep incoming LO/DR streams alive, but drop any map-frame history derived
+    // Keep raw LO/DR queues intact; only reset the derived pose-tracking state
     // from the previous localization session.
     last_loc_pose_ = SE3();
     current_abs_pose_ = SE3();
