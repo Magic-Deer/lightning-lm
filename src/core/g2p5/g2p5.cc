@@ -51,7 +51,7 @@ void G2P5::RenderFront(Keyframe::Ptr kf) {
     {
         UL lock{newest_map_mutex_};
 
-        lightning::Timer::Evaluate([&]() { AddKfToMap({kf}, frontend_map_); }, "G2P5 Occupancy Mapping", true);
+        lightning::Timer::Evaluate([&]() { AddKfToMap({kf}, frontend_map_); }, "G2P5 Occupancy Mapping", false);
         newest_map_ = frontend_map_;
     }
 
