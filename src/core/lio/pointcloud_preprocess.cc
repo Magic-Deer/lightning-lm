@@ -1,9 +1,24 @@
 #include "pointcloud_preprocess.h"
+
+#include <cmath>
 #include <execution>
 
 #include <glog/logging.h>
 
 namespace lightning {
+
+bool PointCloudPreprocess::ShouldKeepLivoxPoint(const livox_ros_driver2::msg::CustomPoint &point) const {
+    const uint8_t return_tag = point.tag & 0x30;
+    if (return_tag != 0x00 && return_tag != 0x10) {
+        return false;
+    }
+
+    if ((point.tag & 0x0F) != 0x00) {
+        return false;
+    }
+
+    return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+}
 
 void PointCloudPreprocess::Set(LidarType lid_type, double bld, int pfilt_num) {
     lidar_type_ = lid_type;
@@ -45,8 +60,7 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
     }
 
     std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const uint &i) {
-        if ((msg->points[i].line < num_scans_) &&
-            ((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00)) {
+        if ((msg->points[i].line < num_scans_) && ShouldKeepLivoxPoint(msg->points[i])) {
             if (i % point_filter_num_ == 0) {
                 cloud_full_[i].x = msg->points[i].x;
                 cloud_full_[i].y = msg->points[i].y;
