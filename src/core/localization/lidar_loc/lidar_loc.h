@@ -40,7 +40,11 @@ class LidarLoc {
         bool try_self_extrap_ = false;                 // 是否尝试自己的外推pose
         bool with_height_ = true;                      // 建图期间是否带有高度约束？
         bool force_2d_ = true;                         // 强制在2D空间
-        float min_init_confidence_ = 0.1;              // 初始化时要求的最小分值
+        float rough_init_min_confidence_ = 0.1;        // 粗初始化时要求的最小分值
+        float init_min_confidence_ = 0.1;              // 初始化最终接受时要求的最小分值
+        float ndt_resolution_ = 1.0;                   // 正常定位NDT分辨率
+        float rough_ndt_resolution_ = 5.0;             // 粗初始化NDT分辨率
+        int ndt_min_points_per_voxel_ = 6;             // 正常定位NDT体素最少点数
         bool init_with_fp_ = true;                     // 是否使用功能点进行初始化
         bool enable_parking_static_ = false;           // 是否在静止时输出固定位置
         bool enable_icp_adjust_ = false;               // 是否使用icp调整ndt匹配结果提高定位精度

@@ -98,7 +98,11 @@ lidar_loc:
   grid_search_angle_step: 60
   lidar_loc_odom_th: 0.5
   init_with_fp: true
-  min_init_confidence: 1.8
+  rough_init_min_confidence: 1.8
+  init_min_confidence: 1.8
+  ndt_resolution: 1.0
+  rough_ndt_resolution: 5.0
+  ndt_min_points_per_voxel: 6
   update_dynamic_cloud: true
   update_err_h: 0.2
   update_err_v: 0.2

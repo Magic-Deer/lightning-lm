@@ -21,14 +21,15 @@ namespace lightning::loc {
 
 LidarLoc::LidarLoc(LidarLoc::Options options) : options_(options) {
     pcl_ndt_.reset(new NDTType());
-    pcl_ndt_->setResolution(1.0);
+    pcl_ndt_->setResolution(options_.ndt_resolution_);
+    pcl_ndt_->getTargetGrid().setMinPointPerVoxel(options_.ndt_min_points_per_voxel_);
     pcl_ndt_->setNeighborhoodSearchMethod(pclomp::DIRECT7);
     pcl_ndt_->setStepSize(0.1);
     pcl_ndt_->setMaximumIterations(4);
     pcl_ndt_->setNumThreads(4);
 
     pcl_ndt_rough_.reset(new NDTType());
-    pcl_ndt_rough_->setResolution(5.0);
+    pcl_ndt_rough_->setResolution(options_.rough_ndt_resolution_);
     pcl_ndt_rough_->setNeighborhoodSearchMethod(pclomp::DIRECT7);
     pcl_ndt_rough_->setStepSize(0.1);
     pcl_ndt_rough_->setMaximumIterations(4);
@@ -60,7 +61,11 @@ bool LidarLoc::Init(const std::string& config_path) {
 
     options_.update_kf_dis_ = yaml.GetValue<double>("lidar_loc", "update_kf_dis");
     options_.update_lidar_loc_score_ = yaml.GetValue<double>("lidar_loc", "update_lidar_loc_score");
-    options_.min_init_confidence_ = yaml.GetValue<float>("lidar_loc", "min_init_confidence");
+    options_.rough_init_min_confidence_ = yaml.GetValue<float>("lidar_loc", "rough_init_min_confidence");
+    options_.init_min_confidence_ = yaml.GetValue<float>("lidar_loc", "init_min_confidence");
+    options_.ndt_resolution_ = yaml.GetValue<float>("lidar_loc", "ndt_resolution");
+    options_.rough_ndt_resolution_ = yaml.GetValue<float>("lidar_loc", "rough_ndt_resolution");
+    options_.ndt_min_points_per_voxel_ = yaml.GetValue<int>("lidar_loc", "ndt_min_points_per_voxel");
 
     options_.filter_z_min_ = yaml.GetValue<double>("lidar_loc", "filter_z_min");
     options_.filter_z_max_ = yaml.GetValue<double>("lidar_loc", "filter_z_max");
@@ -77,7 +82,11 @@ bool LidarLoc::Init(const std::string& config_path) {
     lidar_loc::grid_search_angle_step = yaml.GetValue<double>("lidar_loc", "grid_search_angle_step");
     lidar_loc::grid_search_angle_range = yaml.GetValue<double>("lidar_loc", "grid_search_angle_range");
 
-    LOG(INFO) << "min init confidence: " << options_.min_init_confidence_;
+    LOG(INFO) << "rough init min confidence: " << options_.rough_init_min_confidence_
+              << ", init min confidence: " << options_.init_min_confidence_
+              << ", ndt resolution: " << options_.ndt_resolution_
+              << ", rough ndt resolution: " << options_.rough_ndt_resolution_
+              << ", ndt min points per voxel: " << options_.ndt_min_points_per_voxel_;
 
     std::string map_policy = yaml.GetValue<std::string>("maps", "dyn_cloud_policy");
     if (map_policy == "short") {
@@ -262,13 +271,15 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
     confidence = scores.at(best_score_idx);
     pose = pose_opti.at(best_score_idx);
 
+    const bool rough_init_success = confidence > options_.rough_init_min_confidence_;
+
     /// 高分辨率
-    if (confidence > options_.min_init_confidence_) {
+    if (rough_init_success) {
         Localize(pose, confidence, input, output, false);
     }
 
-    if (confidence > options_.min_init_confidence_) {
-        LOG(INFO) << "init success, score: " << confidence << ", th=" << options_.min_init_confidence_;
+    if (rough_init_success && confidence > options_.init_min_confidence_) {
+        LOG(INFO) << "init success, score: " << confidence << ", th=" << options_.init_min_confidence_;
         Eigen::Vector3d suc_translation = pose.translation();
         Eigen::Matrix3d suc_rotation_matrix = pose.rotationMatrix();
         double suc_x = suc_translation.x();
@@ -338,16 +349,20 @@ bool LidarLoc::InitWithExternalPose(CloudPtr input, const SE3& init_pose) {
     // instead of reusing the FP init path that performs a full-circle yaw search.
     Localize(pose_esti, fitness_score, input, output_cloud, false);
 
-    if (fitness_score <= options_.min_init_confidence_) {
+    bool external_init_success = fitness_score > options_.init_min_confidence_;
+
+    if (!external_init_success) {
         pose_esti = init_pose;
         Localize(pose_esti, fitness_score, input, output_cloud, true);
 
-        if (fitness_score > options_.min_init_confidence_) {
+        const bool rough_init_success = fitness_score > options_.rough_init_min_confidence_;
+        if (rough_init_success) {
             Localize(pose_esti, fitness_score, input, output_cloud, false);
+            external_init_success = fitness_score > options_.init_min_confidence_;
         }
     }
 
-    loc_inited_ = fitness_score > options_.min_init_confidence_;
+    loc_inited_ = external_init_success;
 
     if (loc_inited_) {
         localization_result_.confidence_ = fitness_score;
@@ -418,7 +433,8 @@ bool LidarLoc::TryOtherSolution(CloudPtr input, SE3& pose) {
 
 bool LidarLoc::UpdateGlobalMap() {
     NDTType::Ptr ndt(new NDTType());
-    ndt->setResolution(1.0);
+    ndt->setResolution(options_.ndt_resolution_);
+    ndt->getTargetGrid().setMinPointPerVoxel(options_.ndt_min_points_per_voxel_);
     ndt->setNeighborhoodSearchMethod(pclomp::DIRECT7);
     ndt->setStepSize(0.1);
     ndt->setMaximumIterations(4);
@@ -432,7 +448,7 @@ bool LidarLoc::UpdateGlobalMap() {
 
     if (!loc_inited_) {
         NDTType::Ptr ndt_rough(new NDTType());
-        ndt_rough->setResolution(5.0);
+        ndt_rough->setResolution(options_.rough_ndt_resolution_);
         ndt_rough->setNeighborhoodSearchMethod(pclomp::DIRECT7);
         ndt_rough->setStepSize(0.1);
         ndt_rough->setMaximumIterations(4);
@@ -925,7 +941,10 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     trans = ndt->getFinalTransformation();
     confidence = ndt->getTransformationProbability();
 
-    if (loc_inited_ == false && confidence > options_.min_init_confidence_) {
+    double init_confidence_threshold =
+        use_rough_res ? options_.rough_init_min_confidence_ : options_.init_min_confidence_;
+
+    if (loc_inited_ == false && confidence > init_confidence_threshold) {
         loc_success = true;
     } else {
         loc_success = true;
