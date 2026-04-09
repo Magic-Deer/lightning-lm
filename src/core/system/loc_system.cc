@@ -318,7 +318,8 @@ void LocSystem::HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceSt
 
     const SE3 map_to_base(q, Vec3d(pose_msg->pose.pose.position.x, pose_msg->pose.pose.position.y,
                                    pose_msg->pose.pose.position.z));
-    const SE3 map_to_imu = map_to_base * base_to_imu_;
+    SE3 map_to_imu = map_to_base * base_to_imu_;
+    map_to_imu.translation().z() = 0.0;
 
     SetInitPose(map_to_imu);
 
