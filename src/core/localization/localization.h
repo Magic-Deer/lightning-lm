@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "std_msgs/msg/int32.hpp"
 
 #include "common/imu.h"
@@ -23,6 +25,13 @@ class PGO;
  */
 class Localization {
    public:
+    struct QueuedCloud {
+        CloudPtr cloud = nullptr;
+        uint64_t seq = 0;
+        NavState lo_state;
+        bool has_lo_state = false;
+    };
+
     struct Options {
         Options() {}
 
@@ -71,8 +80,8 @@ class Localization {
     void Finish();
 
     /// 异步处理函数
-    void LidarOdomProcCloud(CloudPtr);
-    void LidarLocProcCloud(CloudPtr);
+    void LidarOdomProcCloud(QueuedCloud);
+    void LidarLocProcCloud(QueuedCloud);
 
     using GlobalLocCallback = std::function<void(const LocalizationResult& result)>;
     using LocalOdomCallback = std::function<void(const NavState& state)>;
@@ -90,6 +99,18 @@ class Localization {
     // void SetHealthDiagNormalCallback(interface::health_diag_normal_callback&& callback);
 
    private:
+    enum class ExternalPoseAction {
+        kProcessScan,
+        kDropScan,
+        kApplyAndProcessScan,
+    };
+
+    struct PendingExternalPose {
+        bool active = false;
+        SE3 pose = SE3();
+        uint64_t min_seq = 0;
+    };
+
     /// 模块  ========================================================================================================
     std::mutex global_mutex_;  // 防止处理过程中被重复init
     Options options_;
@@ -111,8 +132,8 @@ class Localization {
     std::shared_ptr<LidarLoc> lidar_loc_;
 
     /// TODO async 处理
-    sys::AsyncMessageProcess<CloudPtr> lidar_odom_proc_cloud_;  // lidar odom 处理点云
-    sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;   // lidar loc 处理点云
+    sys::AsyncMessageProcess<QueuedCloud> lidar_odom_proc_cloud_;  // lidar odom 处理点云
+    sys::AsyncMessageProcess<QueuedCloud> lidar_loc_proc_cloud_;   // lidar loc 处理点云
 
     /// 结果数据 =====================================================================================================
     LocalizationResult loc_result_;
@@ -125,6 +146,14 @@ class Localization {
     PointcloudWorldCallback pointcloud_world_callback_;
 
     /// 输入检查
+    std::mutex pending_external_pose_mutex_;
+    PendingExternalPose pending_external_pose_;
+    uint64_t next_cloud_seq_ = 0;
+
+    ExternalPoseAction GetExternalPoseActionForScan(uint64_t scan_seq, SE3* pose_to_apply);
+    bool ShouldDropLocResult(uint64_t scan_seq);
+    bool HasPendingExternalPose();
+
     double last_imu_time_ = 0;
     double last_odom_time_ = 0;
     double last_cloud_time_ = 0;

@@ -259,6 +259,15 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     new_frame->lidar_loc_pose_ = loc_result.pose_;
     new_frame->lidar_loc_delta_t_ = lidar_loc_delta_t;
 
+    if (loc_result.rel_pose_set_) {
+        new_frame->lidar_odom_set_ = true;
+        new_frame->lidar_odom_valid_ = true;
+        new_frame->lidar_odom_pose_ = loc_result.rel_pose_;
+        new_frame->lidar_odom_vel_ = loc_result.vel_b_;
+        new_frame->lidar_odom_delta_t_ = loc_result.lidar_odom_delta_t_;
+        new_frame->lo_reliable_ = loc_result.lidar_loc_odom_reliable_;
+    }
+
     // 捕获lidarLoc给出的置信度
     new_frame->confidence_ = loc_result.confidence_;
     if (loc_result.confidence_ > 0.6) {

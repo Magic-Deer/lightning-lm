@@ -127,8 +127,7 @@ class LidarLoc {
     /// 设置UI
     void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
 
-    /// 设置init pose。调用前必须确保 Align() 不在运行；
-    /// 当前由 Localization::SetExternalPose() 先 Drain() 后再调用。
+    /// 设置init pose。只能在定位串行线程中调用。
     void SetInitialPose(SE3 init_pose);
 
     /// 获取定位结果

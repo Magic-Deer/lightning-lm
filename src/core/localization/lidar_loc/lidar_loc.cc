@@ -495,7 +495,6 @@ void LidarLoc::UpdateMapThread() {
 }
 
 void LidarLoc::SetInitialPose(SE3 init_pose) {
-    // Precondition: caller has already drained/stopped Align().
     UL lock(initial_pose_mutex_);
     loc_inited_ = false;
     // map_->ClearMap();

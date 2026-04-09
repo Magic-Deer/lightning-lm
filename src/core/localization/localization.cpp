@@ -75,12 +75,18 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lidar_loc_proc_cloud_.SetSkipParam(options_.enable_lidar_loc_skip_, options_.lidar_loc_skip_num_);
     lidar_odom_proc_cloud_.SetSkipParam(options_.enable_lidar_odom_skip_, options_.lidar_odom_skip_num_);
 
-    lidar_odom_proc_cloud_.SetProcFunc([this](CloudPtr cloud) { LidarOdomProcCloud(cloud); });
-    lidar_loc_proc_cloud_.SetProcFunc([this](CloudPtr cloud) { LidarLocProcCloud(cloud); });
+    lidar_odom_proc_cloud_.SetProcFunc([this](const QueuedCloud& cloud) { LidarOdomProcCloud(cloud); });
+    lidar_loc_proc_cloud_.SetProcFunc([this](const QueuedCloud& cloud) { LidarLocProcCloud(cloud); });
 
     if (options_.online_mode_) {
         lidar_odom_proc_cloud_.Start();
         lidar_loc_proc_cloud_.Start();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(pending_external_pose_mutex_);
+        pending_external_pose_ = PendingExternalPose();
+        next_cloud_seq_ = 0;
     }
 
     /// TODO: 发布
@@ -91,6 +97,10 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         //         }
 
         loc_result_ = res;
+
+        if (HasPendingExternalPose()) {
+            return;
+        }
 
         if (global_loc_callback_ && loc_result_.valid_) {
             global_loc_callback_(loc_result_);
@@ -137,11 +147,14 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
     CloudPtr laser_cloud(new PointCloudType);
     preprocess_->Process(cloud, laser_cloud);
     laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
+    QueuedCloud queued_cloud;
+    queued_cloud.cloud = laser_cloud;
+    queued_cloud.seq = next_cloud_seq_++;
 
     if (options_.online_mode_) {
-        lidar_odom_proc_cloud_.AddMessage(laser_cloud);
+        lidar_odom_proc_cloud_.AddMessage(queued_cloud);
     } else {
-        LidarOdomProcCloud(laser_cloud);
+        LidarOdomProcCloud(queued_cloud);
     }
 }
 
@@ -155,21 +168,24 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
     CloudPtr laser_cloud(new PointCloudType);
     preprocess_->Process(cloud, laser_cloud);
     laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
+    QueuedCloud queued_cloud;
+    queued_cloud.cloud = laser_cloud;
+    queued_cloud.seq = next_cloud_seq_++;
 
     if (options_.online_mode_) {
-        lidar_odom_proc_cloud_.AddMessage(laser_cloud);
+        lidar_odom_proc_cloud_.AddMessage(queued_cloud);
     } else {
-        LidarOdomProcCloud(laser_cloud);
+        LidarOdomProcCloud(queued_cloud);
     }
 }
 
-void Localization::LidarOdomProcCloud(CloudPtr cloud) {
-    if (lio_ == nullptr) {
+void Localization::LidarOdomProcCloud(QueuedCloud queued_cloud) {
+    if (lio_ == nullptr || queued_cloud.cloud == nullptr) {
         return;
     }
 
     /// NOTE: 在NCLT这种数据集中，lio内部是有缓存的，它拿到的点云不一定是最新时刻的点云
-    lio_->ProcessPointCloud2(cloud);
+    lio_->ProcessPointCloud2(queued_cloud.cloud);
     if (!lio_->Run()) {
         return;
     }
@@ -201,32 +217,74 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud) {
         lio_kf_ = kf;
 
         auto scan = lio_->GetScanUndist();
+        QueuedCloud loc_cloud;
+        loc_cloud.cloud = scan;
+        loc_cloud.seq = queued_cloud.seq;
+        loc_cloud.lo_state = lo_state;
+        loc_cloud.has_lo_state = true;
 
         if (options_.online_mode_) {
-            lidar_loc_proc_cloud_.AddMessage(scan);
+            lidar_loc_proc_cloud_.AddMessage(loc_cloud);
         } else {
-            LidarLocProcCloud(scan);
+            LidarLocProcCloud(loc_cloud);
         }
     } else {
         auto scan = lio_->GetScanUndist();
+        QueuedCloud loc_cloud;
+        loc_cloud.cloud = scan;
+        loc_cloud.seq = queued_cloud.seq;
+        loc_cloud.lo_state = lo_state;
+        loc_cloud.has_lo_state = true;
 
         if (options_.online_mode_) {
-            lidar_loc_proc_cloud_.AddMessage(scan);
+            lidar_loc_proc_cloud_.AddMessage(loc_cloud);
         } else {
-            LidarLocProcCloud(scan);
+            LidarLocProcCloud(loc_cloud);
         }
     }
 }
 
-void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
-    lidar_loc_->ProcessCloud(scan_undist);
+void Localization::LidarLocProcCloud(QueuedCloud queued_cloud) {
+    if (lidar_loc_ == nullptr || pgo_ == nullptr || queued_cloud.cloud == nullptr) {
+        return;
+    }
+
+    SE3 external_pose_to_apply;
+    bool applied_external_pose = false;
+    switch (GetExternalPoseActionForScan(queued_cloud.seq, &external_pose_to_apply)) {
+        case ExternalPoseAction::kDropScan:
+            LOG(INFO) << "drop stale loc scan before external reloc, seq: " << queued_cloud.seq;
+            return;
+        case ExternalPoseAction::kApplyAndProcessScan:
+            LOG(INFO) << "external reloc start, seq: " << queued_cloud.seq
+                      << ", seed: " << external_pose_to_apply.translation().transpose();
+            pgo_->Reset();
+            loc_result_ = LocalizationResult();
+            lidar_loc_->SetInitialPose(external_pose_to_apply);
+            applied_external_pose = true;
+            break;
+        case ExternalPoseAction::kProcessScan:
+            break;
+    }
+
+    lidar_loc_->ProcessCloud(queued_cloud.cloud);
+
+    if (ShouldDropLocResult(queued_cloud.seq)) {
+        LOG(INFO) << "discard loc result due to newer external reloc request, seq: " << queued_cloud.seq;
+        return;
+    }
 
     auto res = lidar_loc_->GetLocalizationResult();
+    if (applied_external_pose && queued_cloud.has_lo_state) {
+        res.rel_pose_set_ = true;
+        res.rel_pose_ = queued_cloud.lo_state.GetPose();
+        res.vel_b_ = queued_cloud.lo_state.GetRot().matrix().transpose() * queued_cloud.lo_state.GetVel();
+    }
     pgo_->ProcessLidarLoc(res);
 
     if (ui_) {
         // Twi with Til, here pose means Twl, thus Til=I
-        ui_->UpdateScan(scan_undist, res.pose_);
+        ui_->UpdateScan(queued_cloud.cloud, res.pose_);
     }
 
     if (loc_state_callback_) {
@@ -324,20 +382,48 @@ void Localization::Finish() {
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {
     UL lock(global_mutex_);
 
-    // Drain upstream first so pre-reset odom work cannot enqueue new localization tasks afterwards.
-    lidar_odom_proc_cloud_.Drain();
-    lidar_loc_proc_cloud_.Drain();
-
-    if (pgo_) {
-        pgo_->Reset();
+    if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
+        return;
     }
 
+    {
+        std::lock_guard<std::mutex> external_lock(pending_external_pose_mutex_);
+        pending_external_pose_.active = true;
+        pending_external_pose_.pose = SE3(q, t);
+        pending_external_pose_.min_seq = next_cloud_seq_;
+        LOG(INFO) << "queue external reloc request, min scan seq: " << pending_external_pose_.min_seq
+                  << ", seed: " << t.transpose();
+    }
+
+    lidar_loc_proc_cloud_.ClearPending();
     loc_result_ = LocalizationResult();
+}
 
-    /// 设置外部重定位的pose
-    if (lidar_loc_) {
-        lidar_loc_->SetInitialPose(SE3(q, t));
+Localization::ExternalPoseAction Localization::GetExternalPoseActionForScan(uint64_t scan_seq, SE3* pose_to_apply) {
+    std::lock_guard<std::mutex> lock(pending_external_pose_mutex_);
+    if (!pending_external_pose_.active) {
+        return ExternalPoseAction::kProcessScan;
     }
+
+    if (scan_seq < pending_external_pose_.min_seq) {
+        return ExternalPoseAction::kDropScan;
+    }
+
+    if (pose_to_apply != nullptr) {
+        *pose_to_apply = pending_external_pose_.pose;
+    }
+    pending_external_pose_.active = false;
+    return ExternalPoseAction::kApplyAndProcessScan;
+}
+
+bool Localization::ShouldDropLocResult(uint64_t scan_seq) {
+    std::lock_guard<std::mutex> lock(pending_external_pose_mutex_);
+    return pending_external_pose_.active && scan_seq < pending_external_pose_.min_seq;
+}
+
+bool Localization::HasPendingExternalPose() {
+    std::lock_guard<std::mutex> lock(pending_external_pose_mutex_);
+    return pending_external_pose_.active;
 }
 
 void Localization::SetGlobalLocCallback(Localization::GlobalLocCallback&& callback) {

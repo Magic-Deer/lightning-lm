@@ -46,6 +46,9 @@ class AsyncMessageProcess {
     /// 等待当前队列和正在执行的任务全部完成
     void Drain();
 
+    /// 清掉尚未开始处理的消息，并清空跳帧计数
+    void ClearPending();
+
     /// 退出
     void Quit();
 
@@ -163,6 +166,17 @@ template <typename T>
 void AsyncMessageProcess<T>::Drain() {
     UL lock(mutex_);
     cv_drained_.wait(lock, [this]() { return !processing_ && msg_buffer_.empty() && !update_flag_; });
+}
+
+template <typename T>
+void AsyncMessageProcess<T>::ClearPending() {
+    UL lock(mutex_);
+    msg_buffer_.clear();
+    update_flag_ = false;
+    skip_cnt_ = 0;
+    if (!processing_) {
+        cv_drained_.notify_all();
+    }
 }
 
 template <typename T>
