@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <execution>
+#include <sstream>
 
 #include <pcl/common/transforms.h>
 #include <pcl/filters/passthrough.h>
@@ -18,6 +19,22 @@
 #include "utils/timer.h"
 
 namespace lightning::loc {
+
+namespace {
+
+double PoseYawDeg(const SE3& pose) {
+    const auto rot = pose.rotationMatrix();
+    return std::atan2(rot(1, 0), rot(0, 0)) * constant::kRAD2DEG;
+}
+
+std::string FormatPoseXYZYaw(const SE3& pose) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(6) << pose.translation().x() << "," << pose.translation().y() << ","
+        << pose.translation().z() << "," << PoseYawDeg(pose);
+    return oss.str();
+}
+
+}  // namespace
 
 LidarLoc::LidarLoc(LidarLoc::Options options) : options_(options) {
     pcl_ndt_.reset(new NDTType());
@@ -254,13 +271,13 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
     LOG(INFO) << "init yaw: " << init_yaw << ", p: " << RPYXYZ.pitch << ", ro: " << RPYXYZ.roll << ", search from "
               << searched_yaw.front() << " to " << searched_yaw.back();
 
-    /// 粗分辨率
+    /// 使用 fine 分辨率直接做 yaw 搜索
     std::for_each(index.begin(), index.end(), [&](int i) {
         double fitness_score = 0;
         RPYXYZ.yaw = searched_yaw[i];
         SE3 pose_esti = math::XYZRPYToSE3(RPYXYZ);
 
-        Localize(pose_esti, fitness_score, input, output, true);
+        Localize(pose_esti, fitness_score, input, output, false);
 
         scores[i] = fitness_score;
         pose_opti[i] = pose_esti;
@@ -271,14 +288,7 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
     confidence = scores.at(best_score_idx);
     pose = pose_opti.at(best_score_idx);
 
-    const bool rough_init_success = confidence > options_.rough_init_min_confidence_;
-
-    /// 高分辨率
-    if (rough_init_success) {
-        Localize(pose, confidence, input, output, false);
-    }
-
-    if (rough_init_success && confidence > options_.init_min_confidence_) {
+    if (confidence > options_.init_min_confidence_) {
         LOG(INFO) << "init success, score: " << confidence << ", th=" << options_.init_min_confidence_;
         Eigen::Vector3d suc_translation = pose.translation();
         Eigen::Matrix3d suc_rotation_matrix = pose.rotationMatrix();
@@ -351,17 +361,6 @@ bool LidarLoc::InitWithExternalPose(CloudPtr input, const SE3& init_pose) {
 
     bool external_init_success = fitness_score > options_.init_min_confidence_;
 
-    if (!external_init_success) {
-        pose_esti = init_pose;
-        Localize(pose_esti, fitness_score, input, output_cloud, true);
-
-        const bool rough_init_success = fitness_score > options_.rough_init_min_confidence_;
-        if (rough_init_success) {
-            Localize(pose_esti, fitness_score, input, output_cloud, false);
-            external_init_success = fitness_score > options_.init_min_confidence_;
-        }
-    }
-
     loc_inited_ = external_init_success;
 
     if (loc_inited_) {
@@ -395,6 +394,9 @@ bool LidarLoc::InitWithExternalPose(CloudPtr input, const SE3& init_pose) {
         LOG(INFO) << "external init failed, score: " << fitness_score
                   << ", seed: " << init_pose.translation().transpose();
     }
+
+    LOG(WARNING) << "[EXTERNAL_RELOC] seed=" << FormatPoseXYZYaw(init_pose)
+                 << " score=" << std::fixed << std::setprecision(6) << fitness_score;
 
     return loc_inited_;
 }
