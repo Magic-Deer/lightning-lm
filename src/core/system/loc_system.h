@@ -81,6 +81,7 @@ class LocSystem {
     std::string base_frame_ = "base_link";
     std::string imu_frame_ = "base_link";
     SE3 base_to_imu_ = SE3();
+    bool force_2d_ = false;
 
     std::string imu_topic_;
     std::string cloud_topic_;

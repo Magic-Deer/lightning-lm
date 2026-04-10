@@ -110,6 +110,31 @@ SE3 ComputeMapToOdom(const SE3& map_to_imu, const SE3& odom_to_imu) {
     return map_to_imu * odom_to_imu.inverse();
 }
 
+SE3 ProjectPoseToPlanarBase(const SE3& pose) {
+    PoseRPYD pose_rpy = math::SE3ToRollPitchYaw(pose);
+    pose_rpy.z = 0.0;
+    pose_rpy.roll = 0.0;
+    pose_rpy.pitch = 0.0;
+    return math::XYZRPYToSE3(pose_rpy);
+}
+
+SE3 ProjectOdomToImuToPlanarBase(const SE3& odom_to_imu, const SE3& base_to_imu) {
+    const SE3 odom_to_base = odom_to_imu * base_to_imu.inverse();
+    return ProjectPoseToPlanarBase(odom_to_base);
+}
+
+SE3 BuildOdomToImuFromPlanarBase(const SE3& odom_to_base, const SE3& base_to_imu) {
+    return odom_to_base * base_to_imu;
+}
+
+Vec3d ProjectLinearVelocityToPlanar(const Vec3d& linear_velocity) {
+    return Vec3d(linear_velocity.x(), linear_velocity.y(), 0.0);
+}
+
+Vec3d ProjectAngularVelocityToPlanar(const Vec3d& angular_velocity) {
+    return Vec3d(0.0, 0.0, angular_velocity.z());
+}
+
 geometry_msgs::msg::TransformStamped MakeTransform(const SE3& pose, double timestamp, const std::string& parent_frame,
                                                    const std::string& child_frame) {
     geometry_msgs::msg::TransformStamped msg;
@@ -169,6 +194,7 @@ bool LocSystem::Init(const std::string &yaml_path) {
 
     auto yaml = YAML::LoadFile(yaml_path);
     const auto ros_config = yaml["ros"];
+    const auto lidar_loc_config = yaml["lidar_loc"];
     std::string map_path = yaml["system"]["map_path"].as<std::string>();
 
     LOG(INFO) << "online mode, creating ros2 node ... ";
@@ -195,10 +221,14 @@ bool LocSystem::Init(const std::string &yaml_path) {
     options_.publish_global_tf_ = GetBoolOr(ros_config, "publish_global_tf", options_.publish_global_tf_);
     options_.publish_imu_tf_ = GetBoolOr(ros_config, "publish_imu_tf", options_.publish_imu_tf_);
     options_.publish_odom_ = GetBoolOr(ros_config, "publish_odom", options_.publish_odom_);
+    force_2d_ = GetBoolOr(lidar_loc_config, "force_2d", force_2d_);
 
     if (base_frame_ == imu_frame_ && !IsIdentity(base_to_imu_)) {
         LOG(WARNING) << "base_frame and imu_frame are identical, ignoring non-identity base_to_imu";
         base_to_imu_ = SE3();
+    }
+    if (force_2d_) {
+        LOG(INFO) << "force_2d enabled for localization output; publishing planar odom->base_link";
     }
 
     rclcpp::QoS qos(10);
@@ -353,30 +383,39 @@ void LocSystem::HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceSt
 }
 
 void LocSystem::HandleLocalOdom(const NavState& state) {
+    const SE3 odom_to_imu = state.GetPose();
+    const SE3 raw_odom_to_base = odom_to_imu * base_to_imu_.inverse();
     Vec3d angular_velocity_imu = Vec3d::Zero();
+    SE3 odom_to_base = raw_odom_to_base;
+    NavState local_odom_state = state;
+    if (force_2d_) {
+        odom_to_base = ProjectOdomToImuToPlanarBase(odom_to_imu, base_to_imu_);
+        local_odom_state.SetPose(BuildOdomToImuFromPlanarBase(odom_to_base, base_to_imu_));
+    }
+
     SE3 map_to_odom;
     bool publish_global_tf = false;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (!local_odom_history_.empty() && state.timestamp_ < local_odom_history_.back().timestamp_) {
-            LOG(WARNING) << "local odom time moved backwards, clearing history: " << state.timestamp_ << " < "
+        if (!local_odom_history_.empty() && local_odom_state.timestamp_ < local_odom_history_.back().timestamp_) {
+            LOG(WARNING) << "local odom time moved backwards, clearing history: " << local_odom_state.timestamp_ << " < "
                          << local_odom_history_.back().timestamp_;
             local_odom_history_.clear();
         }
 
-        latest_local_odom_state_ = state;
+        latest_local_odom_state_ = local_odom_state;
         has_latest_local_odom_ = true;
-        local_odom_history_.push_back(state);
+        local_odom_history_.push_back(local_odom_state);
         while (local_odom_history_.size() > kMaxLocalOdomHistorySize) {
             local_odom_history_.pop_front();
         }
 
         if (has_angular_velocity_) {
-            angular_velocity_imu = latest_angular_velocity_ - state.Getbg();
+            angular_velocity_imu = latest_angular_velocity_ - local_odom_state.Getbg();
         }
 
         if (has_pending_initial_pose_) {
-            latest_map_to_odom_ = ComputeMapToOdom(pending_initial_pose_map_to_imu_, state.GetPose());
+            latest_map_to_odom_ = ComputeMapToOdom(pending_initial_pose_map_to_imu_, local_odom_state.GetPose());
             has_latest_map_to_odom_ = true;
             has_pending_initial_pose_ = false;
             map_to_odom = latest_map_to_odom_;
@@ -387,12 +426,17 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
         }
     }
 
-    const SE3 odom_to_imu = state.GetPose();
-    const SE3 odom_to_base = odom_to_imu * base_to_imu_.inverse();
     const Vec3d linear_velocity_imu = state.GetRot().inverse() * state.GetVel();
-    const Vec3d angular_velocity_base = base_to_imu_.so3() * angular_velocity_imu;
-    const Vec3d linear_velocity_base =
-        base_to_imu_.so3() * linear_velocity_imu - angular_velocity_base.cross(base_to_imu_.translation());
+    const Vec3d raw_angular_velocity_base = base_to_imu_.so3() * angular_velocity_imu;
+    const Vec3d raw_linear_velocity_base =
+        base_to_imu_.so3() * linear_velocity_imu - raw_angular_velocity_base.cross(base_to_imu_.translation());
+    Vec3d linear_velocity_base = raw_linear_velocity_base;
+    Vec3d angular_velocity_base = raw_angular_velocity_base;
+
+    if (force_2d_) {
+        linear_velocity_base = ProjectLinearVelocityToPlanar(raw_linear_velocity_base);
+        angular_velocity_base = ProjectAngularVelocityToPlanar(raw_angular_velocity_base);
+    }
 
     if (options_.publish_odom_ && odom_pub_ != nullptr) {
         odom_pub_->publish(
