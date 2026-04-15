@@ -191,9 +191,10 @@ void Localization::LidarOdomProcCloud(QueuedCloud queued_cloud) {
     }
 
     auto lo_state = lio_->GetState();
+    auto continuous_local_odom_state = lio_->GetIMUState();
 
-    if (local_odom_callback_) {
-        local_odom_callback_(lo_state);
+    if (continuous_local_odom_callback_ && continuous_local_odom_state.pose_is_ok_) {
+        continuous_local_odom_callback_(continuous_local_odom_state);
     }
 
     lidar_loc_->ProcessLO(lo_state);
@@ -318,6 +319,10 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
         return;
     }
 
+    if (continuous_local_odom_callback_) {
+        continuous_local_odom_callback_(dr_state);
+    }
+
     // /// 停车判定
     // constexpr auto kThVbrbStill = 0.05;  // 0.08;
     // constexpr auto kThOmegaStill = 0.05;
@@ -430,8 +435,8 @@ void Localization::SetGlobalLocCallback(Localization::GlobalLocCallback&& callba
     global_loc_callback_ = std::move(callback);
 }
 
-void Localization::SetLocalOdomCallback(Localization::LocalOdomCallback&& callback) {
-    local_odom_callback_ = std::move(callback);
+void Localization::SetContinuousLocalOdomCallback(Localization::ContinuousLocalOdomCallback&& callback) {
+    continuous_local_odom_callback_ = std::move(callback);
 }
 
 void Localization::SetLocStateCallback(Localization::LocStateCallback&& callback) {

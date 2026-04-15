@@ -5,6 +5,8 @@
 #include "core/system/loc_system.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <vector>
 
@@ -43,6 +45,13 @@ bool HasKey(const YAML::Node& node, const char* key) {
 bool GetBoolOr(const YAML::Node& node, const char* key, bool fallback) {
     if (node && node[key]) {
         return node[key].as<bool>();
+    }
+    return fallback;
+}
+
+double GetDoubleOr(const YAML::Node& node, const char* key, double fallback) {
+    if (node && node[key]) {
+        return node[key].as<double>();
     }
     return fallback;
 }
@@ -174,6 +183,8 @@ nav_msgs::msg::Odometry MakeOdometry(const SE3& pose, double timestamp, const Ve
     return msg;
 }
 
+constexpr double kTimestampEpsilon = 1e-6;
+
 }  // namespace
 
 LocSystem::LocSystem(LocSystem::Options options) : options_(options) {
@@ -212,6 +223,7 @@ bool LocSystem::Init(const std::string &yaml_path) {
     odom_topic_ = GetStringOr(ros_config, "odom_topic", odom_topic_);
     initialpose_topic_ = GetStringOr(ros_config, "initialpose_topic", initialpose_topic_);
     status_topic_ = GetStringOr(ros_config, "status_topic", status_topic_);
+    odom_publish_hz_ = GetDoubleOr(ros_config, "odom_publish_hz", odom_publish_hz_);
 
     if (!GetRequiredFrame(ros_config, "imu_frame", imu_frame_) ||
         !GetRequiredSE3(ros_config, "base_to_imu", base_to_imu_)) {
@@ -226,6 +238,10 @@ bool LocSystem::Init(const std::string &yaml_path) {
     if (base_frame_ == imu_frame_ && !IsIdentity(base_to_imu_)) {
         LOG(WARNING) << "base_frame and imu_frame are identical, ignoring non-identity base_to_imu";
         base_to_imu_ = SE3();
+    }
+    if (odom_publish_hz_ <= 0.0) {
+        LOG(WARNING) << "invalid odom_publish_hz=" << odom_publish_hz_ << ", fallback to 50.0";
+        odom_publish_hz_ = 50.0;
     }
     if (force_2d_) {
         LOG(INFO) << "force_2d enabled for localization output; publishing planar odom->base_link";
@@ -279,7 +295,13 @@ bool LocSystem::Init(const std::string &yaml_path) {
         static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(node_);
     }
 
-    loc_->SetLocalOdomCallback([this](const NavState& state) { HandleLocalOdom(state); });
+    if (options_.publish_odom_ || options_.publish_global_tf_) {
+        const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<double>(1.0 / odom_publish_hz_));
+        odom_publish_timer_ = node_->create_wall_timer(period, [this]() { PublishLocalOdomTick(); });
+    }
+
+    loc_->SetContinuousLocalOdomCallback([this](const NavState& state) { OnContinuousLocalOdomUpdate(state); });
     loc_->SetGlobalLocCallback([this](const loc::LocalizationResult& result) { HandleGlobalLoc(result); });
     loc_->SetLocStateCallback([this](const std_msgs::msg::Int32& state) { PublishLocState(state); });
 
@@ -382,10 +404,9 @@ void LocSystem::HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceSt
     }
 }
 
-void LocSystem::HandleLocalOdom(const NavState& state) {
+void LocSystem::OnContinuousLocalOdomUpdate(const NavState& state) {
     const SE3 odom_to_imu = state.GetPose();
     const SE3 raw_odom_to_base = odom_to_imu * base_to_imu_.inverse();
-    Vec3d angular_velocity_imu = Vec3d::Zero();
     SE3 odom_to_base = raw_odom_to_base;
     NavState local_odom_state = state;
     if (force_2d_) {
@@ -393,36 +414,11 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
         local_odom_state.SetPose(BuildOdomToImuFromPlanarBase(odom_to_base, base_to_imu_));
     }
 
-    SE3 map_to_odom;
-    bool publish_global_tf = false;
+    Vec3d angular_velocity_imu = Vec3d::Zero();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (!local_odom_history_.empty() && local_odom_state.timestamp_ < local_odom_history_.back().timestamp_) {
-            LOG(WARNING) << "local odom time moved backwards, clearing history: " << local_odom_state.timestamp_ << " < "
-                         << local_odom_history_.back().timestamp_;
-            local_odom_history_.clear();
-        }
-
-        latest_local_odom_state_ = local_odom_state;
-        has_latest_local_odom_ = true;
-        local_odom_history_.push_back(local_odom_state);
-        while (local_odom_history_.size() > kMaxLocalOdomHistorySize) {
-            local_odom_history_.pop_front();
-        }
-
         if (has_angular_velocity_) {
             angular_velocity_imu = latest_angular_velocity_ - local_odom_state.Getbg();
-        }
-
-        if (has_pending_initial_pose_) {
-            latest_map_to_odom_ = ComputeMapToOdom(pending_initial_pose_map_to_imu_, local_odom_state.GetPose());
-            has_latest_map_to_odom_ = true;
-            has_pending_initial_pose_ = false;
-            map_to_odom = latest_map_to_odom_;
-            publish_global_tf = true;
-        } else if (has_latest_map_to_odom_) {
-            map_to_odom = latest_map_to_odom_;
-            publish_global_tf = true;
         }
     }
 
@@ -438,18 +434,72 @@ void LocSystem::HandleLocalOdom(const NavState& state) {
         angular_velocity_base = ProjectAngularVelocityToPlanar(raw_angular_velocity_base);
     }
 
-    if (options_.publish_odom_ && odom_pub_ != nullptr) {
-        odom_pub_->publish(
-            MakeOdometry(odom_to_base, state.timestamp_, linear_velocity_base, angular_velocity_base, odom_frame_,
-                         base_frame_));
-    }
+    SE3 map_to_odom;
+    bool publish_global_tf = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (!local_odom_history_.empty()) {
+            const double last_timestamp = local_odom_history_.back().timestamp_;
+            if (local_odom_state.timestamp_ + kTimestampEpsilon < last_timestamp) {
+                LOG(WARNING) << "drop local odom state due to timestamp regression: " << std::fixed
+                             << std::setprecision(12) << local_odom_state.timestamp_ << " < " << last_timestamp;
+                return;
+            }
+        }
 
-    if (options_.publish_global_tf_ && tf_broadcaster_ != nullptr) {
-        tf_broadcaster_->sendTransform(MakeTransform(odom_to_base, state.timestamp_, odom_frame_, base_frame_));
+        latest_local_odom_state_ = local_odom_state;
+        has_latest_local_odom_ = true;
+        latest_local_odom_sample_.odom_to_base = odom_to_base;
+        latest_local_odom_sample_.linear_velocity_base = linear_velocity_base;
+        latest_local_odom_sample_.angular_velocity_base = angular_velocity_base;
+        latest_local_odom_sample_.timestamp = local_odom_state.timestamp_;
+        latest_local_odom_sample_.valid = true;
+
+        if (!local_odom_history_.empty() &&
+            std::abs(local_odom_state.timestamp_ - local_odom_history_.back().timestamp_) <= kTimestampEpsilon) {
+            local_odom_history_.back() = local_odom_state;
+        } else {
+            local_odom_history_.push_back(local_odom_state);
+        }
+        while (local_odom_history_.size() > kMaxLocalOdomHistorySize) {
+            local_odom_history_.pop_front();
+        }
+
+        if (has_pending_initial_pose_) {
+            latest_map_to_odom_ = ComputeMapToOdom(pending_initial_pose_map_to_imu_, local_odom_state.GetPose());
+            has_latest_map_to_odom_ = true;
+            has_pending_initial_pose_ = false;
+            map_to_odom = latest_map_to_odom_;
+            publish_global_tf = true;
+        } else if (has_latest_map_to_odom_) {
+            map_to_odom = latest_map_to_odom_;
+            publish_global_tf = true;
+        }
     }
 
     if (publish_global_tf) {
-        PublishGlobalTransform(map_to_odom, state.timestamp_);
+        PublishGlobalTransform(map_to_odom, local_odom_state.timestamp_);
+    }
+}
+
+void LocSystem::PublishLocalOdomTick() {
+    LocalOdomSample sample;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        sample = latest_local_odom_sample_;
+    }
+
+    if (!sample.valid) {
+        return;
+    }
+
+    if (options_.publish_odom_ && odom_pub_ != nullptr) {
+        odom_pub_->publish(MakeOdometry(sample.odom_to_base, sample.timestamp, sample.linear_velocity_base,
+                                        sample.angular_velocity_base, odom_frame_, base_frame_));
+    }
+
+    if (options_.publish_global_tf_ && tf_broadcaster_ != nullptr) {
+        tf_broadcaster_->sendTransform(MakeTransform(sample.odom_to_base, sample.timestamp, odom_frame_, base_frame_));
     }
 }
 

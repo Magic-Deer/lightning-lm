@@ -84,13 +84,13 @@ class Localization {
     void LidarLocProcCloud(QueuedCloud);
 
     using GlobalLocCallback = std::function<void(const LocalizationResult& result)>;
-    using LocalOdomCallback = std::function<void(const NavState& state)>;
+    using ContinuousLocalOdomCallback = std::function<void(const NavState& state)>;
     using LocStateCallback = std::function<void(const std_msgs::msg::Int32& state)>;
     using PointcloudBodyCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
     using PointcloudWorldCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
 
     void SetGlobalLocCallback(GlobalLocCallback&& callback);
-    void SetLocalOdomCallback(LocalOdomCallback&& callback);
+    void SetContinuousLocalOdomCallback(ContinuousLocalOdomCallback&& callback);
     void SetLocStateCallback(LocStateCallback&& callback);
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
@@ -140,7 +140,7 @@ class Localization {
 
     /// 框架相关
     GlobalLocCallback global_loc_callback_;
-    LocalOdomCallback local_odom_callback_;
+    ContinuousLocalOdomCallback continuous_local_odom_callback_;
     LocStateCallback loc_state_callback_;
     PointcloudBodyCallback pointcloud_body_callback_;
     PointcloudWorldCallback pointcloud_world_callback_;

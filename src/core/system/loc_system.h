@@ -59,8 +59,17 @@ class LocSystem {
     void Spin();
 
    private:
+    struct LocalOdomSample {
+        SE3 odom_to_base = SE3();
+        Vec3d linear_velocity_base = Vec3d::Zero();
+        Vec3d angular_velocity_base = Vec3d::Zero();
+        double timestamp = 0.0;
+        bool valid = false;
+    };
+
     void HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr& pose_msg);
-    void HandleLocalOdom(const NavState& state);
+    void OnContinuousLocalOdomUpdate(const NavState& state);
+    void PublishLocalOdomTick();
     void HandleGlobalLoc(const loc::LocalizationResult& result);
     void PublishLocState(const std_msgs::msg::Int32& state);
     void PublishGlobalTransform(const SE3& map_to_odom, double timestamp);
@@ -89,6 +98,7 @@ class LocSystem {
     std::string odom_topic_ = "/odom";
     std::string initialpose_topic_ = "/initialpose";
     std::string status_topic_ = "/lightning/status";
+    double odom_publish_hz_ = 50.0;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
@@ -97,13 +107,15 @@ class LocSystem {
 
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_ = nullptr;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr status_pub_ = nullptr;
+    rclcpp::TimerBase::SharedPtr odom_publish_timer_ = nullptr;
 
-    static constexpr size_t kMaxLocalOdomHistorySize = 200;
+    static constexpr size_t kMaxLocalOdomHistorySize = 1000;
 
     std::mutex state_mutex_;
     std::deque<NavState> local_odom_history_;
     NavState latest_local_odom_state_;
     bool has_latest_local_odom_ = false;
+    LocalOdomSample latest_local_odom_sample_;
     SE3 latest_map_to_odom_ = SE3();
     bool has_latest_map_to_odom_ = false;
     SE3 pending_initial_pose_map_to_imu_ = SE3();

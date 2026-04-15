@@ -68,6 +68,7 @@ ros:
     translation: [ 0.0, 0.0, 0.0 ]
     rotation_xyzw: [ 0.0, 0.0, 0.0, 1.0 ]
   odom_topic: /odom
+  odom_publish_hz: 50.0
   initialpose_topic: /initialpose
   status_topic: /lightning/status
   publish_global_tf: true  # slam: map -> base_link, localization: map -> odom + odom -> base_link
