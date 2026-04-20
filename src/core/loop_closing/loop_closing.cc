@@ -133,10 +133,6 @@ void LoopClosing::DetectLoopCandidates() {
         }
     }
 
-    if (!candidates_.empty()) {
-        last_loop_kf_ = cur_kf_;
-    }
-
     if (options_.verbose_ && !candidates_.empty()) {
         LOG(INFO) << "lc candi: " << candidates_.size();
     }
@@ -163,6 +159,10 @@ void LoopClosing::ComputeLoopCandidates() {
     }
 
     candidates_.swap(succ_candidates);
+
+    if (!candidates_.empty()) {
+        last_loop_kf_ = cur_kf_;
+    }
 }
 
 void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
@@ -174,7 +174,7 @@ void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
         CloudPtr submap(new PointCloudType);
         for (int idx = -submap_idx_range; idx < submap_idx_range; idx += 4) {
             int id = idx + given_id;
-            if (id < 0 || id > all_keyframes_.size()) {
+            if (id < 0 || id >= all_keyframes_.size()) {
                 continue;
             }
 
