@@ -37,7 +37,7 @@ sudo apt install libgoogle-glog-dev
 - 编译lightning。回到工作区根目录 `*_ws` 然后执行:
 
 ```bash
-colcon build
+colcon build --packages-select lightning
 ```
 
 ### 防止编译OOM
@@ -45,7 +45,7 @@ colcon build
 
 ```bash
 # '-j3' 表示最多3个线程，可以根据机器情况而定
-MAKEFLAGS="-j3" colcon build
+MAKEFLAGS="-j3" colcon build --packages-select lightning
 ```
 
 # 以下是原版 README
