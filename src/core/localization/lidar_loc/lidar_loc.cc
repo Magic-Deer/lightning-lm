@@ -118,6 +118,9 @@ bool LidarLoc::Init(const std::string& config_path) {
     options_.map_option_.load_dyn_cloud_ = yaml.GetValue<bool>("maps", "load_dyn_cloud");
     options_.map_option_.save_dyn_when_quit_ = yaml.GetValue<bool>("maps", "save_dyn_when_quit");
     options_.map_option_.save_dyn_when_unload_ = yaml.GetValue<bool>("maps", "save_dyn_when_unload");
+    std::string recover_pose_path = options_.recover_pose_path_;
+    options_.recover_pose_path_ = ResolveWorkspacePathFrom(options_.recover_pose_path_, config_path);
+    LOG(INFO) << "resolved recover pose path: " << recover_pose_path << " -> " << options_.recover_pose_path_;
 
     map_ = std::make_shared<TiledMap>(options_.map_option_);
     map_->LoadMapIndex();
