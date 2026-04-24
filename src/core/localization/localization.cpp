@@ -4,6 +4,7 @@
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/localization.h"
 #include "core/localization/pose_graph/pgo.h"
+#include "io/file_io.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
 
@@ -38,7 +39,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lidar_loc_options.update_dynamic_cloud_ = yaml.GetValue<bool>("lidar_loc", "update_dynamic_cloud");
     lidar_loc_options.force_2d_ = yaml.GetValue<bool>("lidar_loc", "force_2d");
     lidar_loc_options.map_option_.enable_dynamic_polygon_ = false;
-    lidar_loc_options.map_option_.map_path_ = global_map_path;
+    lidar_loc_options.map_option_.map_path_ = ResolveWorkspacePathFrom(global_map_path, yaml_path);
+    LOG(INFO) << "resolved map path: " << global_map_path << " -> " << lidar_loc_options.map_option_.map_path_;
     lidar_loc_ = std::make_shared<LidarLoc>(lidar_loc_options);
 
     if (options_.with_ui_) {

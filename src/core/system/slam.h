@@ -101,6 +101,7 @@ class SlamSystem {
     rclcpp::Service<SaveMapService>::SharedPtr savemap_service_ = nullptr;
 
     std::string map_name_;  // 地图名
+    std::string workspace_root_;
 
     std::shared_ptr<LaserMapping> lio_ = nullptr;       // lio 前端
     std::shared_ptr<LoopClosing> lc_ = nullptr;         // 回环检测

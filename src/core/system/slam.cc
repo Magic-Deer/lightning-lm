@@ -7,6 +7,7 @@
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
 #include "core/maps/tiled_map.h"
+#include "io/file_io.h"
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
 
@@ -80,6 +81,11 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     if (!lio_->Init(yaml_path)) {
         LOG(ERROR) << "failed to init lio module";
         return false;
+    }
+
+    workspace_root_ = FindWorkspaceRoot(yaml_path);
+    if (!workspace_root_.empty()) {
+        LOG(INFO) << "resolved workspace root: " << workspace_root_;
     }
 
     auto yaml = YAML::LoadFile(yaml_path);
@@ -212,9 +218,7 @@ void SlamSystem::StartSLAM(std::string map_name) {
 void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,
                          SaveMapService::Response::SharedPtr response) {
     map_name_ = request->map_id;
-    std::string save_path = "./data/" + map_name_ + "/";
-
-    SaveMap(save_path);
+    SaveMap("./data/" + map_name_ + "/");
     response->response = 0;
 }
 
@@ -223,6 +227,7 @@ void SlamSystem::SaveMap(const std::string& path) {
     if (save_path.empty()) {
         save_path = "./data/" + map_name_ + "/";
     }
+    save_path = ResolveWorkspacePath(save_path, workspace_root_);
 
     LOG(INFO) << "slam map saving to " << save_path;
 
