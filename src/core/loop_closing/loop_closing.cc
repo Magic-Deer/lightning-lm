@@ -5,7 +5,10 @@
 #include "core/loop_closing/loop_closing.h"
 #include "common/keyframe.h"
 #include "common/loop_candidate.h"
+#include "core/lightning_math.hpp"
 #include "utils/pointcloud_utils.h"
+
+#include <cmath>
 
 #include <pcl/common/transforms.h>
 #include <pcl/registration/ndt.h>
@@ -18,6 +21,24 @@
 #include "io/yaml_io.h"
 
 namespace lightning {
+
+namespace {
+
+double NormalizeYaw(double yaw) {
+    while (yaw > M_PI) {
+        yaw -= 2 * M_PI;
+    }
+    while (yaw < -M_PI) {
+        yaw += 2 * M_PI;
+    }
+    return yaw;
+}
+
+double YawDiff(const SE3& pose1, const SE3& pose2) {
+    return std::abs(NormalizeYaw(math::SE3ToRollPitchYaw(pose1).yaw - math::SE3ToRollPitchYaw(pose2).yaw));
+}
+
+}  // namespace
 
 LoopClosing::~LoopClosing() {
     if (options_.online_mode_) {
@@ -51,6 +72,11 @@ void LoopClosing::Init(const std::string yaml_path) {
         options_.max_range_ = yaml.GetValue<double>("loop_closing", "max_range");
         options_.ndt_score_th_ = yaml.GetValue<double>("loop_closing", "ndt_score_th");
         options_.with_height_ = yaml.GetValue<bool>("loop_closing", "with_height");
+
+        auto raw_yaml = YAML::LoadFile(yaml_path);
+        if (raw_yaml["loop_closing"]["max_yaw_diff_deg"]) {
+            options_.max_yaw_diff_deg_ = raw_yaml["loop_closing"]["max_yaw_diff_deg"].as<double>();
+        }
     }
 
     if (options_.online_mode_) {
@@ -98,6 +124,9 @@ void LoopClosing::DetectLoopCandidates() {
 
     auto& kfs_mapping = all_keyframes_;
     Keyframe::Ptr check_first = nullptr;
+    SE3 cur_opt_pose = cur_kf_->GetOptPose();
+    SE3 cur_lio_pose = cur_kf_->GetLIOPose();
+    double max_yaw_diff = options_.max_yaw_diff_deg_ * M_PI / 180.0;
 
     if (last_loop_kf_ == nullptr) {
         last_loop_kf_ = cur_kf_;
@@ -120,13 +149,24 @@ void LoopClosing::DetectLoopCandidates() {
             break;
         }
 
-        Vec3d dt = kf->GetOptPose().translation() - cur_kf_->GetOptPose().translation();
+        SE3 kf_opt_pose = kf->GetOptPose();
+        Vec3d dt = kf_opt_pose.translation() - cur_opt_pose.translation();
         double t2d = dt.head<2>().norm();  // x-y distance
         double range_th = options_.max_range_;
 
         if (t2d < range_th) {
+            SE3 kf_lio_pose = kf->GetLIOPose();
+            double yaw_diff = YawDiff(kf_lio_pose, cur_lio_pose);
+            if (yaw_diff > max_yaw_diff) {
+                if (options_.verbose_) {
+                    LOG(INFO) << "skip loop candi " << kf->GetID() << ", " << cur_kf_->GetID()
+                              << " because yaw diff: " << yaw_diff * 180.0 / M_PI;
+                }
+                continue;
+            }
+
             LoopCandidate c(kf->GetID(), cur_kf_->GetID());
-            c.Tij_ = kf->GetLIOPose().inverse() * cur_kf_->GetLIOPose();
+            c.Tij_ = kf_lio_pose.inverse() * cur_lio_pose;
 
             candidates_.emplace_back(c);
             check_first = kf;

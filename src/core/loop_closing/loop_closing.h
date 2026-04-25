@@ -30,6 +30,7 @@ class LoopClosing {
         int closest_id_th_ = 50;     // 历史关键帧与当前帧的ID间隔
         double max_range_ = 30.0;    // 候选帧的最大距离
         double ndt_score_th_ = 1.0;  // ndt位姿分值
+        double max_yaw_diff_deg_ = 10.0;
 
         /// 图优化权重
         double motion_trans_noise_ = 0.1;               // 位移权重
