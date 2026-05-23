@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <cmath>
 #include <execution>
+#include <iomanip>
 #include <sstream>
 
 #include <pcl/common/transforms.h>
@@ -22,15 +24,23 @@ namespace lightning::loc {
 
 namespace {
 
-double PoseYawDeg(const SE3& pose) {
+double PoseYaw(const SE3& pose) {
     const auto rot = pose.rotationMatrix();
-    return std::atan2(rot(1, 0), rot(0, 0)) * constant::kRAD2DEG;
+    return std::atan2(rot(1, 0), rot(0, 0));
+}
+
+SE3 ProjectTo2D(const SE3& pose) {
+    PoseRPYD RPYXYZ = math::SE3ToRollPitchYaw(pose);
+    RPYXYZ.roll = 0;
+    RPYXYZ.pitch = 0;
+    RPYXYZ.z = 0;
+    return math::XYZRPYToSE3(RPYXYZ);
 }
 
 std::string FormatPoseXYZYaw(const SE3& pose) {
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(6) << pose.translation().x() << "," << pose.translation().y() << ","
-        << pose.translation().z() << "," << PoseYawDeg(pose);
+        << pose.translation().z() << "," << PoseYaw(pose);
     return oss.str();
 }
 
@@ -95,6 +105,10 @@ bool LidarLoc::Init(const std::string& config_path) {
     options_.enable_icp_adjust_ = yaml.GetValue<bool>("lidar_loc", "enable_icp_adjust");
     options_.with_height_ = yaml.GetValue<bool>("loop_closing", "with_height");
     options_.try_self_extrap_ = yaml.GetValue<bool>("lidar_loc", "try_self_extrap");
+    options_.force_2d_ = yaml.GetValue<bool>("lidar_loc", "force_2d");
+    options_.enable_tracking_gate_ = yaml.GetValue<bool>("lidar_loc", "enable_tracking_gate");
+    options_.tracking_gate_max_xy_ = yaml.GetValue<double>("lidar_loc", "tracking_gate_max_xy");
+    options_.tracking_gate_max_yaw_ = yaml.GetValue<double>("lidar_loc", "tracking_gate_max_yaw_rad");
 
     lidar_loc::grid_search_angle_step = yaml.GetValue<double>("lidar_loc", "grid_search_angle_step");
     lidar_loc::grid_search_angle_range = yaml.GetValue<double>("lidar_loc", "grid_search_angle_range");
@@ -104,6 +118,9 @@ bool LidarLoc::Init(const std::string& config_path) {
               << ", ndt resolution: " << options_.ndt_resolution_
               << ", rough ndt resolution: " << options_.rough_ndt_resolution_
               << ", ndt min points per voxel: " << options_.ndt_min_points_per_voxel_;
+    LOG(INFO) << "tracking gate: enable=" << options_.enable_tracking_gate_
+              << ", max_xy=" << options_.tracking_gate_max_xy_
+              << ", max_yaw_rad=" << options_.tracking_gate_max_yaw_;
 
     std::string map_policy = yaml.GetValue<std::string>("maps", "dyn_cloud_policy");
     if (map_policy == "short") {
@@ -760,11 +777,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     }
 
     if (options_.force_2d_) {
-        PoseRPYD RPYXYZ = math::SE3ToRollPitchYaw(current_pose_esti);
-        RPYXYZ.roll = 0;
-        RPYXYZ.pitch = 0;
-        RPYXYZ.z = 0;
-        current_pose_esti = math::XYZRPYToSE3(RPYXYZ);
+        current_pose_esti = ProjectTo2D(current_pose_esti);
     }
 
     // if (options_.with_height_) {
@@ -772,10 +785,14 @@ void LidarLoc::Align(const CloudPtr& input) {
     //     LOG(INFO) << "adjust current pose to : " << current_pose_esti.translation().transpose();
     // }
 
-    current_abs_pose_ = current_pose_esti;
     current_score_ = fitness_score;
     double delta_rel_abs_pose = 0;
     bool lidar_loc_odom_valid = true;
+    bool tracking_gate_valid = true;
+    bool rejected_by_tracking_gate = false;
+    double tracking_gate_innovation_xy = 0.0;
+    double tracking_gate_innovation_yaw = 0.0;
+    SE3 tracking_predicted_pose = guess_from_lo;
 
     if (loc_success_lo || loc_success_self || loc_success_dr) {
         loc_success = true;
@@ -784,16 +801,47 @@ void LidarLoc::Align(const CloudPtr& input) {
     }
 
     if (loc_success) {
-        lidar_loc_odom_valid = CheckLidarOdomValid(current_pose_esti, delta_rel_abs_pose);
-        last_timestamp_ = current_timestamp_;  // 成功时，更新上一时刻激光定位时间
-        match_fail_count_ = 0;
+        const bool can_run_tracking_gate =
+            options_.enable_tracking_gate_ && last_abs_pose_set_ && last_lo_pose_set_ && current_lo_pose_set_;
+        if (can_run_tracking_gate) {
+            const SE3 local_delta = last_lo_pose_.inverse() * current_lo_pose_;
+            tracking_predicted_pose = last_abs_pose_ * local_delta;
+            if (options_.force_2d_) {
+                tracking_predicted_pose = ProjectTo2D(tracking_predicted_pose);
+            }
+
+            tracking_gate_valid =
+                ValidateTrackingMeasurement(tracking_predicted_pose, current_pose_esti, tracking_gate_innovation_xy,
+                                            tracking_gate_innovation_yaw);
+        }
+
+        if (tracking_gate_valid) {
+            current_abs_pose_ = current_pose_esti;
+            lidar_loc_odom_valid = CheckLidarOdomValid(current_pose_esti, delta_rel_abs_pose);
+            last_timestamp_ = current_timestamp_;  // 成功时，更新上一时刻激光定位时间
+            match_fail_count_ = 0;
+        } else {
+            rejected_by_tracking_gate = true;
+            current_abs_pose_ = tracking_predicted_pose;
+            delta_rel_abs_pose = tracking_gate_innovation_xy;
+            lidar_loc_odom_valid = false;
+            LOG(WARNING) << "reject lidar loc tracking measurement by gate: timestamp=" << std::fixed
+                         << std::setprecision(12) << current_timestamp_ << ", confidence=" << fitness_score
+                         << ", innovation_xy=" << tracking_gate_innovation_xy
+                         << ", innovation_yaw_rad=" << tracking_gate_innovation_yaw
+                         << ", predicted=" << FormatPoseXYZYaw(tracking_predicted_pose)
+                         << ", ndt=" << FormatPoseXYZYaw(current_pose_esti);
+        }
     } else {
+        current_abs_pose_ = current_pose_esti;
         current_score_ = fitness_score;
         LOG(WARNING) << "localization failed! score: " << current_score_;
 
         ///  若连续3帧匹配失败就设一个大分值
         ++match_fail_count_;
     }
+
+    const bool accepted_measurement = loc_success && !rejected_by_tracking_gate;
 
     /// 确定激光定位是否满足平滑性要求
     Vec3d dpred = current_abs_pose_.translation() - guess_from_self.translation();
@@ -812,7 +860,10 @@ void LidarLoc::Align(const CloudPtr& input) {
         UL lock(result_mutex_);
         localization_result_.timestamp_ = current_timestamp_;
         localization_result_.confidence_ = fitness_score;
-        if (match_fail_count_ < 100) {
+        if (rejected_by_tracking_gate) {
+            localization_result_.lidar_loc_valid_ = false;
+            localization_result_.status_ = LocalizationStatus::FOLLOWING_DR;
+        } else if (match_fail_count_ < 100) {
             localization_result_.lidar_loc_valid_ = true;
             localization_result_.status_ = LocalizationStatus::GOOD;
         } else if (match_fail_count_ >= 100 && match_fail_count_ < 300) {
@@ -826,7 +877,7 @@ void LidarLoc::Align(const CloudPtr& input) {
 
         localization_result_.lidar_loc_odom_delta_ = delta_rel_abs_pose;
         localization_result_.lidar_loc_odom_error_normal_ = lidar_loc_odom_valid;
-        localization_result_.pose_ = current_pose_esti;
+        localization_result_.pose_ = current_abs_pose_;
     }
 
     UpdateState(input);
@@ -835,7 +886,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     /// 条件：1. 定位成功 2. 与上次更新间隔一定距离 3. RTK与激光定位横纵向误差都小于0.3，或者匹配分值大于1.0
     bool score_cond = current_score_ > options_.update_lidar_loc_score_;
 
-    if (options_.update_dynamic_cloud_ && loc_success &&
+    if (options_.update_dynamic_cloud_ && accepted_measurement &&
         (((current_pose_esti.translation() - last_dyn_upd_pose_.pose_.translation()).norm() >
           options_.update_kf_dis_) ||
          fabs(current_time - last_dyn_upd_pose_.timestamp_) > options_.update_kf_time_)) {
@@ -863,10 +914,12 @@ void LidarLoc::Align(const CloudPtr& input) {
         }
     }
 
-    if (lidar_loc_pose_queue_.empty()) {
-        lidar_loc_pose_queue_.emplace_back(current_time, current_abs_pose_);
-    } else if (current_time > lidar_loc_pose_queue_.back().timestamp_) {
-        lidar_loc_pose_queue_.emplace_back(current_time, current_abs_pose_);
+    if (accepted_measurement) {
+        if (lidar_loc_pose_queue_.empty()) {
+            lidar_loc_pose_queue_.emplace_back(current_time, current_abs_pose_);
+        } else if (current_time > lidar_loc_pose_queue_.back().timestamp_) {
+            lidar_loc_pose_queue_.emplace_back(current_time, current_abs_pose_);
+        }
     }
 
     while (lidar_loc_pose_queue_.size() > 1000) {
@@ -881,12 +934,27 @@ void LidarLoc::Align(const CloudPtr& input) {
     /// 9. save for recover pose
     recover_pose_out_.open(options_.recover_pose_path_);
     if (recover_pose_out_) {
-        Vec3d t = current_pose_esti.translation();
-        Quatd q = current_pose_esti.unit_quaternion();
+        Vec3d t = current_abs_pose_.translation();
+        Quatd q = current_abs_pose_.unit_quaternion();
         recover_pose_out_ << t[0] << " " << t[1] << " " << t[2] << " " << q.x() << " " << q.y() << " " << q.z() << " "
                           << q.w();
         recover_pose_out_.close();
     }
+}
+
+bool LidarLoc::ValidateTrackingMeasurement(const SE3& predicted_pose, const SE3& ndt_pose, double& innovation_xy,
+                                           double& innovation_yaw) const {
+    if (!options_.enable_tracking_gate_) {
+        innovation_xy = 0.0;
+        innovation_yaw = 0.0;
+        return true;
+    }
+
+    const SE3 innovation = predicted_pose.inverse() * ndt_pose;
+    innovation_xy = innovation.translation().head<2>().norm();
+    innovation_yaw = std::fabs(PoseYaw(innovation));
+
+    return innovation_xy <= options_.tracking_gate_max_xy_ && innovation_yaw <= options_.tracking_gate_max_yaw_;
 }
 
 bool LidarLoc::CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi) {

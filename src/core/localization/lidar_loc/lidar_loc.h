@@ -64,6 +64,9 @@ class LidarLoc {
         double update_kf_time_ = 10.0;         // 每隔多少时间更新一次
         double update_lidar_loc_score_ = 2.2;  // 更新时激光定位匹配分值阈值
         double lidar_loc_odom_th_ = 0.3;       // 激光两帧匹配结果与对应lidarodom结果差的阈值，超过则认为lidarodom异常
+        bool enable_tracking_gate_ = false;    // 是否使用LO预测约束tracking阶段的NDT measurement
+        double tracking_gate_max_xy_ = 0.25;   // tracking阶段NDT measurement允许的最大横向innovation
+        double tracking_gate_max_yaw_ = 5.0 * M_PI / 180.0;  // tracking阶段NDT measurement允许的最大yaw innovation
 
         double max_update_cache_dis_ = 30.0;  // 更新动态图层的缓冲距离
         std::string recover_pose_path_ = "./data/recover_pose.txt";
@@ -187,6 +190,8 @@ class LidarLoc {
     bool YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr output);
 
     bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
+    bool ValidateTrackingMeasurement(const SE3& predicted_pose, const SE3& ndt_pose, double& innovation_xy,
+                                     double& innovation_yaw) const;
 
     // 成员变量  ==========================================================================
     Options options_;
