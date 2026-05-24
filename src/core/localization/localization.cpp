@@ -54,6 +54,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     }
 
     lidar_loc_->Init(yaml_path);
+    lidar_loc_->SetLidarLocCorrectionSuspended(lidar_loc_correction_suspended_.load());
 
     /// pose graph
     pgo_ = std::make_shared<PGO>();
@@ -404,6 +405,16 @@ void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vec
 
     lidar_loc_proc_cloud_.ClearPending();
     loc_result_ = LocalizationResult();
+}
+
+void Localization::SetLidarLocCorrectionSuspended(bool suspended) {
+    lidar_loc_correction_suspended_.store(suspended);
+    if (lidar_loc_ != nullptr) {
+        lidar_loc_->SetLidarLocCorrectionSuspended(suspended);
+    }
+    if (suspended) {
+        lidar_loc_proc_cloud_.ClearPending();
+    }
 }
 
 Localization::ExternalPoseAction Localization::GetExternalPoseActionForScan(uint64_t scan_seq, SE3* pose_to_apply) {

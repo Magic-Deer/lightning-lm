@@ -790,6 +790,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     bool lidar_loc_odom_valid = true;
     bool tracking_gate_valid = true;
     bool rejected_by_tracking_gate = false;
+    bool rejected_by_suspend = false;
     double tracking_gate_innovation_xy = 0.0;
     double tracking_gate_innovation_yaw = 0.0;
     SE3 tracking_predicted_pose = guess_from_lo;
@@ -801,15 +802,20 @@ void LidarLoc::Align(const CloudPtr& input) {
     }
 
     if (loc_success) {
-        const bool can_run_tracking_gate =
-            options_.enable_tracking_gate_ && last_abs_pose_set_ && last_lo_pose_set_ && current_lo_pose_set_;
-        if (can_run_tracking_gate) {
+        const bool correction_suspended = lidar_loc_correction_suspended_.load();
+        const bool can_make_tracking_prediction = last_abs_pose_set_ && last_lo_pose_set_ && current_lo_pose_set_;
+        if (can_make_tracking_prediction) {
             const SE3 local_delta = last_lo_pose_.inverse() * current_lo_pose_;
             tracking_predicted_pose = last_abs_pose_ * local_delta;
             if (options_.force_2d_) {
                 tracking_predicted_pose = ProjectTo2D(tracking_predicted_pose);
             }
+        }
 
+        if (correction_suspended) {
+            tracking_gate_valid = false;
+            rejected_by_suspend = true;
+        } else if (options_.enable_tracking_gate_ && can_make_tracking_prediction) {
             tracking_gate_valid =
                 ValidateTrackingMeasurement(tracking_predicted_pose, current_pose_esti, tracking_gate_innovation_xy,
                                             tracking_gate_innovation_yaw);
@@ -825,12 +831,14 @@ void LidarLoc::Align(const CloudPtr& input) {
             current_abs_pose_ = tracking_predicted_pose;
             delta_rel_abs_pose = tracking_gate_innovation_xy;
             lidar_loc_odom_valid = false;
-            LOG(WARNING) << "reject lidar loc tracking measurement by gate: timestamp=" << std::fixed
-                         << std::setprecision(12) << current_timestamp_ << ", confidence=" << fitness_score
-                         << ", innovation_xy=" << tracking_gate_innovation_xy
-                         << ", innovation_yaw_rad=" << tracking_gate_innovation_yaw
-                         << ", predicted=" << FormatPoseXYZYaw(tracking_predicted_pose)
-                         << ", ndt=" << FormatPoseXYZYaw(current_pose_esti);
+            if (!rejected_by_suspend) {
+                LOG(WARNING) << "reject lidar loc tracking measurement by gate: timestamp=" << std::fixed
+                             << std::setprecision(12) << current_timestamp_ << ", confidence=" << fitness_score
+                             << ", innovation_xy=" << tracking_gate_innovation_xy
+                             << ", innovation_yaw_rad=" << tracking_gate_innovation_yaw
+                             << ", predicted=" << FormatPoseXYZYaw(tracking_predicted_pose)
+                             << ", ndt=" << FormatPoseXYZYaw(current_pose_esti);
+            }
         }
     } else {
         current_abs_pose_ = current_pose_esti;

@@ -223,6 +223,8 @@ bool LocSystem::Init(const std::string &yaml_path) {
     odom_topic_ = GetStringOr(ros_config, "odom_topic", odom_topic_);
     initialpose_topic_ = GetStringOr(ros_config, "initialpose_topic", initialpose_topic_);
     status_topic_ = GetStringOr(ros_config, "status_topic", status_topic_);
+    suspend_lidar_loc_correction_service_ =
+        ros_config["suspend_lidar_loc_correction_service"].as<std::string>();
     odom_publish_hz_ = GetDoubleOr(ros_config, "odom_publish_hz", odom_publish_hz_);
 
     if (!GetRequiredFrame(ros_config, "imu_frame", imu_frame_) ||
@@ -286,6 +288,12 @@ bool LocSystem::Init(const std::string &yaml_path) {
     initialpose_sub_ = node_->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         initialpose_topic_, 10, [this](geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose_msg) {
             HandleInitialPose(pose_msg);
+        });
+    suspend_lidar_loc_correction_service_handle_ = node_->create_service<std_srvs::srv::SetBool>(
+        suspend_lidar_loc_correction_service_,
+        [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+               std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+            HandleSuspendLidarLocCorrection(request, response);
         });
 
     if (options_.publish_global_tf_) {
@@ -480,6 +488,17 @@ void LocSystem::OnContinuousLocalOdomUpdate(const NavState& state) {
     if (publish_global_tf) {
         PublishGlobalTransform(map_to_odom, local_odom_state.timestamp_);
     }
+}
+
+void LocSystem::HandleSuspendLidarLocCorrection(
+    const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+    std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+    loc_->SetLidarLocCorrectionSuspended(request->data);
+
+    response->success = true;
+    response->message =
+        request->data ? "lidar loc correction suspended" : "lidar loc correction resumed";
+    LOG(INFO) << response->message;
 }
 
 void LocSystem::PublishLocalOdomTick() {

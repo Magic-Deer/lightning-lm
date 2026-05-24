@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "std_msgs/msg/int32.hpp"
@@ -71,6 +72,7 @@ class Localization {
 
     /// 由外部设置pose，适用于手动重定位
     void SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t);
+    void SetLidarLocCorrectionSuspended(bool suspended);
 
     /// TODO: 其他初始化逻辑
 
@@ -137,6 +139,7 @@ class Localization {
 
     /// 结果数据 =====================================================================================================
     LocalizationResult loc_result_;
+    std::atomic_bool lidar_loc_correction_suspended_{false};
 
     /// 框架相关
     GlobalLocCallback global_loc_callback_;
