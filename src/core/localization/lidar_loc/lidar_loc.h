@@ -10,6 +10,7 @@
 
 #include "common/nav_state.h"
 #include "common/timed_pose.h"
+#include "core/localization/loc_correction_params.h"
 #include "core/localization/localization_result.h"
 #include "core/maps/tiled_map.h"
 
@@ -65,9 +66,6 @@ class LidarLoc {
         double update_kf_time_ = 10.0;         // 每隔多少时间更新一次
         double update_lidar_loc_score_ = 2.2;  // 更新时激光定位匹配分值阈值
         double lidar_loc_odom_th_ = 0.3;       // 激光两帧匹配结果与对应lidarodom结果差的阈值，超过则认为lidarodom异常
-        bool enable_tracking_gate_ = false;    // 是否使用LO预测约束tracking阶段的NDT measurement
-        double tracking_gate_max_xy_ = 0.3;    // tracking阶段NDT measurement允许的最大横向innovation
-        double tracking_gate_max_yaw_ = 0.1;   // tracking阶段NDT measurement允许的最大yaw innovation
 
         double max_update_cache_dis_ = 30.0;  // 更新动态图层的缓冲距离
         std::string recover_pose_path_ = "./data/recover_pose.txt";
@@ -133,7 +131,7 @@ class LidarLoc {
 
     /// 设置init pose。只能在定位串行线程中调用。
     void SetInitialPose(SE3 init_pose);
-    void SetLidarLocCorrectionSuspended(bool suspended) { lidar_loc_correction_suspended_.store(suspended); }
+    void SetLocCorrectionParams(const LocCorrectionParams& params);
 
     /// 获取定位结果
     LocalizationResult GetLocalizationResult() {
@@ -215,7 +213,9 @@ class LidarLoc {
     bool initial_pose_set_ = false;  // 定位是否被手动设置
     SE3 initial_pose_;               // 手动设置的初始位姿
     bool loc_inited_ = false;        // 定位是否初始化成功
-    std::atomic_bool lidar_loc_correction_suspended_{false};
+    std::atomic_bool correction_suspended_{false};
+    std::atomic<double> reject_threshold_xy_{0.0};
+    std::atomic<double> reject_threshold_yaw_{0.0};
 
     double current_timestamp_ = 0;  // 本次输入的时间戳
     double last_timestamp_ = 0;     // 上次输入的时间戳

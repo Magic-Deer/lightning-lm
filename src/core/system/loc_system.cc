@@ -223,8 +223,6 @@ bool LocSystem::Init(const std::string &yaml_path) {
     odom_topic_ = GetStringOr(ros_config, "odom_topic", odom_topic_);
     initialpose_topic_ = GetStringOr(ros_config, "initialpose_topic", initialpose_topic_);
     status_topic_ = GetStringOr(ros_config, "status_topic", status_topic_);
-    suspend_lidar_loc_correction_service_ =
-        ros_config["suspend_lidar_loc_correction_service"].as<std::string>();
     odom_publish_hz_ = GetDoubleOr(ros_config, "odom_publish_hz", odom_publish_hz_);
 
     if (!GetRequiredFrame(ros_config, "imu_frame", imu_frame_) ||
@@ -289,11 +287,11 @@ bool LocSystem::Init(const std::string &yaml_path) {
         initialpose_topic_, 10, [this](geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose_msg) {
             HandleInitialPose(pose_msg);
         });
-    suspend_lidar_loc_correction_service_handle_ = node_->create_service<std_srvs::srv::SetBool>(
-        suspend_lidar_loc_correction_service_,
-        [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-               std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
-            HandleSuspendLidarLocCorrection(request, response);
+    set_loc_correction_params_service_handle_ = node_->create_service<srv::SetLocCorrectionParams>(
+        set_loc_correction_params_service_,
+        [this](const std::shared_ptr<srv::SetLocCorrectionParams::Request> request,
+               std::shared_ptr<srv::SetLocCorrectionParams::Response> response) {
+            HandleSetLocCorrectionParams(request, response);
         });
 
     if (options_.publish_global_tf_) {
@@ -490,15 +488,23 @@ void LocSystem::OnContinuousLocalOdomUpdate(const NavState& state) {
     }
 }
 
-void LocSystem::HandleSuspendLidarLocCorrection(
-    const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
-    std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
-    loc_->SetLidarLocCorrectionSuspended(request->data);
+void LocSystem::HandleSetLocCorrectionParams(
+    const std::shared_ptr<srv::SetLocCorrectionParams::Request>& request,
+    std::shared_ptr<srv::SetLocCorrectionParams::Response> response) {
+    loc::LocCorrectionParams params;
+    params.correction_suspended = request->correction_suspended;
+    params.reject_threshold_xy = request->reject_threshold_xy;
+    params.reject_threshold_yaw = request->reject_threshold_yaw;
+    loc_->SetLocCorrectionParams(params);
 
     response->success = true;
-    response->message =
-        request->data ? "lidar loc correction suspended" : "lidar loc correction resumed";
-    LOG(INFO) << response->message;
+    response->message = "loc correction params updated";
+    response->correction_suspended = params.correction_suspended;
+    response->reject_threshold_xy = params.reject_threshold_xy;
+    response->reject_threshold_yaw = params.reject_threshold_yaw;
+    LOG(INFO) << response->message << ": correction_suspended=" << params.correction_suspended
+              << ", reject_threshold_xy=" << params.reject_threshold_xy
+              << ", reject_threshold_yaw=" << params.reject_threshold_yaw;
 }
 
 void LocSystem::PublishLocalOdomTick() {

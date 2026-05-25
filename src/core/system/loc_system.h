@@ -11,7 +11,6 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/int32.hpp>
-#include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -19,6 +18,7 @@
 #include <deque>
 #include <mutex>
 
+#include "lightning/srv/set_loc_correction_params.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
 
 #include "common/eigen_types.h"
@@ -69,9 +69,9 @@ class LocSystem {
     };
 
     void HandleInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr& pose_msg);
-    void HandleSuspendLidarLocCorrection(
-        const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
-        std::shared_ptr<std_srvs::srv::SetBool::Response> response);
+    void HandleSetLocCorrectionParams(
+        const std::shared_ptr<srv::SetLocCorrectionParams::Request>& request,
+        std::shared_ptr<srv::SetLocCorrectionParams::Response> response);
     void OnContinuousLocalOdomUpdate(const NavState& state);
     void PublishLocalOdomTick();
     void HandleGlobalLoc(const loc::LocalizationResult& result);
@@ -102,14 +102,14 @@ class LocSystem {
     std::string odom_topic_ = "/odom";
     std::string initialpose_topic_ = "/initialpose";
     std::string status_topic_ = "/lightning/status";
-    std::string suspend_lidar_loc_correction_service_ = "/lightning/suspend_lidar_loc_correction";
+    std::string set_loc_correction_params_service_ = "/lightning/set_loc_correction_params";
     double odom_publish_hz_ = 50.0;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_sub_ = nullptr;
-    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr suspend_lidar_loc_correction_service_handle_ = nullptr;
+    rclcpp::Service<srv::SetLocCorrectionParams>::SharedPtr set_loc_correction_params_service_handle_ = nullptr;
 
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_ = nullptr;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr status_pub_ = nullptr;

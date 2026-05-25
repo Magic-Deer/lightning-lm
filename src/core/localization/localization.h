@@ -1,12 +1,13 @@
 #pragma once
 
-#include <atomic>
 #include <cstdint>
+#include <mutex>
 
 #include "std_msgs/msg/int32.hpp"
 
 #include "common/imu.h"
 #include "core/lio/laser_mapping.h"
+#include "core/localization/loc_correction_params.h"
 #include "core/localization/localization_result.h"
 #include "core/system/async_message_process.h"
 
@@ -72,7 +73,7 @@ class Localization {
 
     /// 由外部设置pose，适用于手动重定位
     void SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t);
-    void SetLidarLocCorrectionSuspended(bool suspended);
+    void SetLocCorrectionParams(const LocCorrectionParams& params);
 
     /// TODO: 其他初始化逻辑
 
@@ -139,7 +140,6 @@ class Localization {
 
     /// 结果数据 =====================================================================================================
     LocalizationResult loc_result_;
-    std::atomic_bool lidar_loc_correction_suspended_{false};
 
     /// 框架相关
     GlobalLocCallback global_loc_callback_;

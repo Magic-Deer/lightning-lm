@@ -51,7 +51,6 @@ ament_target_dependencies(
         "geometry_msgs"
         "sensor_msgs"
         "nav_msgs"
-        "std_srvs"
         "message_filters"
         "pcl_conversions"
         "tf2_ros"
