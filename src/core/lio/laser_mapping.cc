@@ -1,6 +1,7 @@
 #include <pcl/common/transforms.h>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
+#include <iomanip>
 
 #include "common/options.h"
 #include "core/lightning_math.hpp"
@@ -124,6 +125,14 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
     double timestamp = imu->timestamp;
 
     UL lock(mtx_buffer_);
+    const double imu_dt = last_timestamp_imu_ > 0.0 ? timestamp - last_timestamp_imu_ : 0.0;
+    if (last_timestamp_imu_ > 0.0 && (imu_dt < -0.001 || imu_dt > 0.05)) {
+        LOG_EVERY_N(WARNING, 20) << "[lio_diag] imu timing anomaly in LIO: stamp=" << std::fixed
+                                 << std::setprecision(12) << timestamp << ", last_imu=" << last_timestamp_imu_
+                                 << ", dt=" << imu_dt << ", imu_buffer_size=" << imu_buffer_.size()
+                                 << ", lidar_buffer_size=" << lidar_buffer_.size()
+                                 << ", lidar_pushed=" << lidar_pushed_;
+    }
     if (timestamp < last_timestamp_imu_) {
         LOG(WARNING) << "imu loop back, clear buffer";
         imu_buffer_.clear();
@@ -161,7 +170,13 @@ void LaserMapping::RefreshImuStateFromBuffer() {
 
         const double dt = imu->timestamp - t;
         if (dt > 0.2) {
-            LOG_EVERY_N(WARNING, 20) << "skip stale imu gap while refreshing state, dt=" << dt;
+            LOG_EVERY_N(WARNING, 20) << "skip stale imu gap while refreshing state, dt=" << std::fixed
+                                     << std::setprecision(12) << dt << ", kf_time=" << t
+                                     << ", imu_time=" << imu->timestamp
+                                     << ", imu_buffer_size=" << imu_buffer_.size()
+                                     << ", lidar_buffer_size=" << lidar_buffer_.size()
+                                     << ", last_lidar_end=" << lidar_end_time_
+                                     << ", last_imu=" << last_timestamp_imu_;
             kf_imu_.SetTime(imu->timestamp);
             t = imu->timestamp;
             continue;
@@ -392,6 +407,19 @@ void LaserMapping::ProcessPointCloud2(CloudPtr cloud) {
                 lidar_buffer_.clear();
             }
 
+            const double lidar_dt = last_timestamp_lidar_ > 0.0 ? timestamp - last_timestamp_lidar_ : 0.0;
+            const double last_point_offset = cloud->empty() ? 0.0 : cloud->points.back().time / double(1000);
+            if (last_timestamp_lidar_ > 0.0 && (lidar_dt < -0.001 || lidar_dt > 0.2)) {
+                LOG_EVERY_N(WARNING, 10) << "[lio_diag] processed lidar timing anomaly: stamp=" << std::fixed
+                                         << std::setprecision(12) << timestamp << ", last_lidar="
+                                         << last_timestamp_lidar_ << ", dt=" << lidar_dt
+                                         << ", point_count=" << cloud->size()
+                                         << ", last_point_offset=" << last_point_offset
+                                         << ", latest_imu=" << last_timestamp_imu_
+                                         << ", imu_buffer_size=" << imu_buffer_.size()
+                                         << ", lidar_buffer_size=" << lidar_buffer_.size();
+            }
+
             lidar_buffer_.push_back(cloud);
             time_buffer_.push_back(timestamp);
             last_timestamp_lidar_ = timestamp;
@@ -428,6 +456,28 @@ bool LaserMapping::SyncPackages() {
     }
 
     if (last_timestamp_imu_ < lidar_end_time_) {
+        sync_wait_imu_count_++;
+        const double gap = lidar_end_time_ - last_timestamp_imu_;
+        const double oldest_imu = imu_buffer_.empty() ? 0.0 : imu_buffer_.front()->timestamp;
+        const double newest_imu = imu_buffer_.empty() ? 0.0 : imu_buffer_.back()->timestamp;
+        const size_t scan_points = measures_.scan_ == nullptr ? 0 : measures_.scan_->size();
+        const double last_point_offset =
+            scan_points == 0 ? 0.0 : measures_.scan_->points.back().time / double(1000);
+        if (gap > 0.05 || sync_wait_imu_count_ == 1 || sync_wait_imu_count_ % 10 == 0) {
+            LOG_EVERY_N(WARNING, 10) << "[lio_diag] sync waiting for imu: gap=" << std::fixed
+                                     << std::setprecision(12) << gap
+                                     << ", wait_count=" << sync_wait_imu_count_
+                                     << ", lidar_begin=" << measures_.lidar_begin_time_
+                                     << ", lidar_end=" << lidar_end_time_
+                                     << ", last_imu=" << last_timestamp_imu_
+                                     << ", oldest_imu=" << oldest_imu
+                                     << ", newest_imu=" << newest_imu
+                                     << ", imu_buffer_size=" << imu_buffer_.size()
+                                     << ", lidar_buffer_size=" << lidar_buffer_.size()
+                                     << ", scan_points=" << scan_points
+                                     << ", last_point_offset=" << last_point_offset
+                                     << ", lidar_pushed=" << lidar_pushed_;
+        }
         return false;
     }
 
@@ -448,6 +498,17 @@ bool LaserMapping::SyncPackages() {
     lidar_buffer_.pop_front();
     time_buffer_.pop_front();
     lidar_pushed_ = false;
+
+    if (sync_wait_imu_count_ > 0 || lidar_buffer_.size() > 3 || imu_buffer_.size() > 300) {
+        LOG(INFO) << "[lio_diag] sync consumed lidar: recovered_wait_count=" << sync_wait_imu_count_
+                  << ", lidar_begin=" << std::fixed << std::setprecision(12) << measures_.lidar_begin_time_
+                  << ", lidar_end=" << measures_.lidar_end_time_
+                  << ", imu_count=" << measures_.imu_.size()
+                  << ", remaining_imu_buffer_size=" << imu_buffer_.size()
+                  << ", remaining_lidar_buffer_size=" << lidar_buffer_.size()
+                  << ", last_imu=" << last_timestamp_imu_;
+    }
+    sync_wait_imu_count_ = 0;
 
     // LOG(INFO) << "sync: " << std::setprecision(14) << measures_.lidar_begin_time_ << ", " <<
     // measures_.lidar_end_time_;

@@ -115,6 +115,14 @@ bool IsIdentity(const SE3& pose, double tolerance = 1e-9) {
     return pose.translation().norm() < tolerance && pose.so3().log().norm() < tolerance;
 }
 
+double SteadyNowSec() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool ShouldLogInputTiming(bool has_prev, double stamp_dt, double callback_dt, double age) {
+    return std::abs(age) > 0.1 || (has_prev && (stamp_dt < -0.001 || stamp_dt > 0.05 || callback_dt > 0.05));
+}
+
 SE3 ComputeMapToOdom(const SE3& map_to_imu, const SE3& odom_to_imu) {
     return map_to_imu * odom_to_imu.inverse();
 }
@@ -257,6 +265,29 @@ bool LocSystem::Init(const std::string &yaml_path) {
 
     imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
         imu_topic_, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
+            const double stamp = ToSec(msg->header.stamp);
+            const double ros_now = node_->now().seconds();
+            const double steady_now = SteadyNowSec();
+            double stamp_dt = 0.0;
+            double callback_dt = 0.0;
+            bool has_prev = false;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                has_prev = last_input_imu_stamp_ > 0.0;
+                if (has_prev) {
+                    stamp_dt = stamp - last_input_imu_stamp_;
+                    callback_dt = steady_now - last_input_imu_wall_;
+                }
+                last_input_imu_stamp_ = stamp;
+                last_input_imu_wall_ = steady_now;
+            }
+            const double age = ros_now - stamp;
+            if (ShouldLogInputTiming(has_prev, stamp_dt, callback_dt, age)) {
+                LOG_EVERY_N(WARNING, 20) << "[loc_diag] imu input timing anomaly: stamp=" << std::fixed
+                                         << std::setprecision(12) << stamp << ", age=" << age
+                                         << ", stamp_dt=" << stamp_dt << ", callback_dt=" << callback_dt;
+            }
+
             const std::string msg_frame = NormalizeFrameId(msg->header.frame_id);
             if (msg_frame != imu_frame_ && !warned_imu_frame_mismatch_.exchange(true)) {
                 LOG(WARNING) << "incoming IMU message frame_id is '" << msg->header.frame_id
@@ -275,11 +306,60 @@ bool LocSystem::Init(const std::string &yaml_path) {
 
     cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
         cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+            const double stamp = ToSec(cloud->header.stamp);
+            const double ros_now = node_->now().seconds();
+            const double steady_now = SteadyNowSec();
+            double stamp_dt = 0.0;
+            double callback_dt = 0.0;
+            bool has_prev = false;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                has_prev = last_input_cloud_stamp_ > 0.0;
+                if (has_prev) {
+                    stamp_dt = stamp - last_input_cloud_stamp_;
+                    callback_dt = steady_now - last_input_cloud_wall_;
+                }
+                last_input_cloud_stamp_ = stamp;
+                last_input_cloud_wall_ = steady_now;
+            }
+            const double age = ros_now - stamp;
+            if (ShouldLogInputTiming(has_prev, stamp_dt, callback_dt, age)) {
+                LOG_EVERY_N(WARNING, 10) << "[loc_diag] pointcloud input timing anomaly: stamp=" << std::fixed
+                                         << std::setprecision(12) << stamp << ", age=" << age
+                                         << ", stamp_dt=" << stamp_dt << ", callback_dt=" << callback_dt
+                                         << ", point_count=" << cloud->width * cloud->height;
+            }
             Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
         });
 
     livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
         livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
+            const double stamp = ToSec(cloud->header.stamp);
+            const double ros_now = node_->now().seconds();
+            const double steady_now = SteadyNowSec();
+            double stamp_dt = 0.0;
+            double callback_dt = 0.0;
+            bool has_prev = false;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                has_prev = last_input_livox_stamp_ > 0.0;
+                if (has_prev) {
+                    stamp_dt = stamp - last_input_livox_stamp_;
+                    callback_dt = steady_now - last_input_livox_wall_;
+                }
+                last_input_livox_stamp_ = stamp;
+                last_input_livox_wall_ = steady_now;
+            }
+            const double age = ros_now - stamp;
+            if (ShouldLogInputTiming(has_prev, stamp_dt, callback_dt, age)) {
+                const double first_offset = cloud->points.empty() ? 0.0 : cloud->points.front().offset_time / 1e9;
+                const double last_offset = cloud->points.empty() ? 0.0 : cloud->points.back().offset_time / 1e9;
+                LOG_EVERY_N(WARNING, 10) << "[loc_diag] livox input timing anomaly: stamp=" << std::fixed
+                                         << std::setprecision(12) << stamp << ", age=" << age
+                                         << ", stamp_dt=" << stamp_dt << ", callback_dt=" << callback_dt
+                                         << ", point_num=" << cloud->point_num << ", first_offset=" << first_offset
+                                         << ", last_offset=" << last_offset;
+            }
             Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
         });
 
@@ -461,6 +541,19 @@ void LocSystem::OnContinuousLocalOdomUpdate(const NavState& state) {
         latest_local_odom_sample_.timestamp = local_odom_state.timestamp_;
         latest_local_odom_sample_.valid = true;
 
+        if (last_local_odom_stamp_ > 0.0) {
+            const double odom_dt = local_odom_state.timestamp_ - last_local_odom_stamp_;
+            const double age = node_ == nullptr ? 0.0 : node_->now().seconds() - local_odom_state.timestamp_;
+            if (odom_dt < -0.001 || odom_dt > 0.05 || std::abs(age) > 0.1) {
+                LOG_EVERY_N(WARNING, 20) << "[loc_diag] local odom timing anomaly: stamp=" << std::fixed
+                                         << std::setprecision(12) << local_odom_state.timestamp_
+                                         << ", age=" << age << ", stamp_dt=" << odom_dt
+                                         << ", pose_xy=" << local_odom_state.GetPose().translation().x() << ","
+                                         << local_odom_state.GetPose().translation().y();
+            }
+        }
+        last_local_odom_stamp_ = local_odom_state.timestamp_;
+
         if (!local_odom_history_.empty() &&
             std::abs(local_odom_state.timestamp_ - local_odom_history_.back().timestamp_) <= kTimestampEpsilon) {
             local_odom_history_.back() = local_odom_state;
@@ -524,6 +617,11 @@ void LocSystem::PublishLocalOdomTick() {
     }
 
     if (options_.publish_global_tf_ && tf_broadcaster_ != nullptr) {
+        const double age = node_ == nullptr ? 0.0 : node_->now().seconds() - sample.timestamp;
+        if (std::abs(age) > 0.1) {
+            LOG_EVERY_N(WARNING, 50) << "[loc_diag] publishing stale odom->base_link tf: stamp=" << std::fixed
+                                     << std::setprecision(12) << sample.timestamp << ", age=" << age;
+        }
         tf_broadcaster_->sendTransform(MakeTransform(sample.odom_to_base, sample.timestamp, odom_frame_, base_frame_));
     }
 }
@@ -571,6 +669,11 @@ void LocSystem::PublishLocState(const std_msgs::msg::Int32& state) {
 
 void LocSystem::PublishGlobalTransform(const SE3& map_to_odom, double timestamp) {
     if (options_.publish_global_tf_ && tf_broadcaster_ != nullptr) {
+        const double age = node_ == nullptr ? 0.0 : node_->now().seconds() - timestamp;
+        if (std::abs(age) > 0.1) {
+            LOG_EVERY_N(WARNING, 20) << "[loc_diag] publishing stale map->odom tf: stamp=" << std::fixed
+                                     << std::setprecision(12) << timestamp << ", age=" << age;
+        }
         tf_broadcaster_->sendTransform(MakeTransform(map_to_odom, timestamp, map_frame_, odom_frame_));
     }
 }

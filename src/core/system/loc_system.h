@@ -129,6 +129,13 @@ class LocSystem {
     Vec3d latest_angular_velocity_ = Vec3d::Zero();
     bool has_angular_velocity_ = false;
     std::atomic_bool warned_imu_frame_mismatch_ = false;
+    double last_input_imu_stamp_ = 0.0;
+    double last_input_imu_wall_ = 0.0;
+    double last_input_cloud_stamp_ = 0.0;
+    double last_input_cloud_wall_ = 0.0;
+    double last_input_livox_stamp_ = 0.0;
+    double last_input_livox_wall_ = 0.0;
+    double last_local_odom_stamp_ = 0.0;
 };
 
 };  // namespace lightning

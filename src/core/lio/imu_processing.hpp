@@ -7,6 +7,7 @@
 #include <cmath>
 #include <deque>
 #include <fstream>
+#include <iomanip>
 
 #include "common/eigen_types.h"
 #include "common/measure_group.h"
@@ -209,7 +210,13 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         gyro = angvel_avr;
 
         if (dt > 0.2) {
-            LOG_EVERY_N(WARNING, 20) << "get abnormal dt: " << dt;
+            LOG_EVERY_N(WARNING, 20) << "get abnormal dt: " << std::fixed << std::setprecision(12) << dt
+                                     << ", head_imu=" << head->timestamp
+                                     << ", tail_imu=" << tail->timestamp
+                                     << ", last_lidar_end=" << last_lidar_end_time_
+                                     << ", lidar_begin=" << pcl_beg_time
+                                     << ", lidar_end=" << pcl_end_time
+                                     << ", imu_count=" << v_imu.size();
             kf_state.SetTime(tail->timestamp);
             continue;
         }
@@ -241,6 +248,13 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     /*** calculated the pos and attitude prediction at the frame-end ***/
     double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
     dt = note * (pcl_end_time - imu_end_time);
+    if (std::abs(dt) > 0.2) {
+        LOG_EVERY_N(WARNING, 20) << "[lio_diag] abnormal lidar tail prediction dt: " << std::fixed
+                                 << std::setprecision(12) << dt << ", imu_end=" << imu_end_time
+                                 << ", lidar_begin=" << pcl_beg_time << ", lidar_end=" << pcl_end_time
+                                 << ", last_lidar_end=" << last_lidar_end_time_
+                                 << ", imu_count=" << v_imu.size();
+    }
     kf_state.Predict(dt, Q_, gyro, acc);
 
     imu_state = kf_state.GetX();

@@ -178,6 +178,7 @@ class LaserMapping {
     double last_timestamp_imu_ = -1.0;
     double first_lidar_time_ = 0.0;
     bool lidar_pushed_ = false;
+    int sync_wait_imu_count_ = 0;
 
     bool enable_skip_lidar_ = true;  // 雷达是否需要跳帧
     int skip_lidar_num_ = 5;         // 每隔多少帧跳一个雷达
