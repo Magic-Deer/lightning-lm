@@ -247,7 +247,8 @@ bool LocSystem::Init(const std::string &yaml_path) {
         LOG(INFO) << "force_2d enabled for localization output; publishing planar odom->base_link";
     }
 
-    rclcpp::QoS qos(10);
+    auto imu_qos = rclcpp::SensorDataQoS().keep_last(50);
+    auto lidar_qos = rclcpp::SensorDataQoS().keep_last(10);
 
     if (options_.publish_odom_) {
         odom_pub_ = node_->create_publisher<nav_msgs::msg::Odometry>(odom_topic_, 10);
@@ -256,7 +257,7 @@ bool LocSystem::Init(const std::string &yaml_path) {
     status_pub_ = node_->create_publisher<std_msgs::msg::Int32>(status_topic_, 10);
 
     imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-        imu_topic_, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
+        imu_topic_, imu_qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
             const std::string msg_frame = NormalizeFrameId(msg->header.frame_id);
             if (msg_frame != imu_frame_ && !warned_imu_frame_mismatch_.exchange(true)) {
                 LOG(WARNING) << "incoming IMU message frame_id is '" << msg->header.frame_id
@@ -274,12 +275,12 @@ bool LocSystem::Init(const std::string &yaml_path) {
         });
 
     cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-        cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+        cloud_topic_, lidar_qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
             Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
         });
 
     livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-        livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
+        livox_topic_, lidar_qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
             Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
         });
 
