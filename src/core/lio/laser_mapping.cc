@@ -65,6 +65,8 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
 
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
         enable_skip_lidar_ = skip_lidar_num_ > 0;
+        options_.kf_dis_th_ = yaml["fasterlio"]["kf_dis_th"].as<double>();
+        options_.kf_angle_th_ = yaml["fasterlio"]["kf_angle_th"].as<double>() * M_PI / 180.0;
 
     } catch (...) {
         LOG(ERROR) << "bad conversion";
