@@ -18,6 +18,7 @@
 #include <deque>
 #include <mutex>
 
+#include "lightning/srv/get_loc_correction_params.hpp"
 #include "lightning/srv/set_loc_correction_params.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
 
@@ -72,6 +73,9 @@ class LocSystem {
     void HandleSetLocCorrectionParams(
         const std::shared_ptr<srv::SetLocCorrectionParams::Request>& request,
         std::shared_ptr<srv::SetLocCorrectionParams::Response> response);
+    void HandleGetLocCorrectionParams(
+        const std::shared_ptr<srv::GetLocCorrectionParams::Request>& request,
+        std::shared_ptr<srv::GetLocCorrectionParams::Response> response);
     void OnContinuousLocalOdomUpdate(const NavState& state);
     void PublishLocalOdomTick();
     void HandleGlobalLoc(const loc::LocalizationResult& result);
@@ -103,6 +107,7 @@ class LocSystem {
     std::string initialpose_topic_ = "/initialpose";
     std::string status_topic_ = "/lightning/status";
     std::string set_loc_correction_params_service_ = "/lightning/set_loc_correction_params";
+    std::string get_loc_correction_params_service_ = "/lightning/get_loc_correction_params";
     double odom_publish_hz_ = 50.0;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
@@ -110,6 +115,7 @@ class LocSystem {
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_sub_ = nullptr;
     rclcpp::Service<srv::SetLocCorrectionParams>::SharedPtr set_loc_correction_params_service_handle_ = nullptr;
+    rclcpp::Service<srv::GetLocCorrectionParams>::SharedPtr get_loc_correction_params_service_handle_ = nullptr;
 
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_ = nullptr;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr status_pub_ = nullptr;

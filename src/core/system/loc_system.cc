@@ -294,6 +294,12 @@ bool LocSystem::Init(const std::string &yaml_path) {
                std::shared_ptr<srv::SetLocCorrectionParams::Response> response) {
             HandleSetLocCorrectionParams(request, response);
         });
+    get_loc_correction_params_service_handle_ = node_->create_service<srv::GetLocCorrectionParams>(
+        get_loc_correction_params_service_,
+        [this](const std::shared_ptr<srv::GetLocCorrectionParams::Request> request,
+               std::shared_ptr<srv::GetLocCorrectionParams::Response> response) {
+            HandleGetLocCorrectionParams(request, response);
+        });
 
     if (options_.publish_global_tf_) {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
@@ -506,6 +512,19 @@ void LocSystem::HandleSetLocCorrectionParams(
     LOG(INFO) << response->message << ": correction_suspended=" << params.correction_suspended
               << ", reject_threshold_xy=" << params.reject_threshold_xy
               << ", reject_threshold_yaw=" << params.reject_threshold_yaw;
+}
+
+void LocSystem::HandleGetLocCorrectionParams(
+    const std::shared_ptr<srv::GetLocCorrectionParams::Request>& request,
+    std::shared_ptr<srv::GetLocCorrectionParams::Response> response) {
+    (void)request;
+    const loc::LocCorrectionParams params = loc_->GetLocCorrectionParams();
+
+    response->success = true;
+    response->message = "loc correction params";
+    response->correction_suspended = params.correction_suspended;
+    response->reject_threshold_xy = params.reject_threshold_xy;
+    response->reject_threshold_yaw = params.reject_threshold_yaw;
 }
 
 void LocSystem::PublishLocalOdomTick() {

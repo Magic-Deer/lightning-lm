@@ -415,6 +415,13 @@ void Localization::SetLocCorrectionParams(const LocCorrectionParams& params) {
     }
 }
 
+LocCorrectionParams Localization::GetLocCorrectionParams() const {
+    if (lidar_loc_ == nullptr) {
+        return LocCorrectionParams();
+    }
+    return lidar_loc_->GetLocCorrectionParams();
+}
+
 Localization::ExternalPoseAction Localization::GetExternalPoseActionForScan(uint64_t scan_seq, SE3* pose_to_apply) {
     std::lock_guard<std::mutex> lock(pending_external_pose_mutex_);
     if (!pending_external_pose_.active) {

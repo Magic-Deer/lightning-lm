@@ -74,6 +74,7 @@ class Localization {
     /// 由外部设置pose，适用于手动重定位
     void SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t);
     void SetLocCorrectionParams(const LocCorrectionParams& params);
+    LocCorrectionParams GetLocCorrectionParams() const;
 
     /// TODO: 其他初始化逻辑
 

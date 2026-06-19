@@ -34,7 +34,7 @@ include(cmake/packages.cmake)
 # msg 和 srv
 set(MY_SRV_FILES "")
 set(SRC_DIR ${PROJECT_SOURCE_DIR}/srv)
-file(GLOB_RECURSE SRC_FILES ${SRC_DIR}/*.srv)
+file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS ${SRC_DIR}/*.srv)
 foreach (SRC_FILE ${SRC_FILES})
     file(RELATIVE_PATH REL_PATH ${SRC_DIR} ${SRC_FILE})
     list(APPEND MY_SRV_FILES ${PROJECT_SOURCE_DIR}:srv/${REL_PATH})

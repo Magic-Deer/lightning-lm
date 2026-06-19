@@ -132,6 +132,7 @@ class LidarLoc {
     /// 设置init pose。只能在定位串行线程中调用。
     void SetInitialPose(SE3 init_pose);
     void SetLocCorrectionParams(const LocCorrectionParams& params);
+    LocCorrectionParams GetLocCorrectionParams() const;
 
     /// 获取定位结果
     LocalizationResult GetLocalizationResult() {

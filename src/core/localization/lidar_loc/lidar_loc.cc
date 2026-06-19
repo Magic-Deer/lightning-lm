@@ -573,6 +573,14 @@ void LidarLoc::SetLocCorrectionParams(const LocCorrectionParams& params) {
     reject_threshold_yaw_.store(params.reject_threshold_yaw);
 }
 
+LocCorrectionParams LidarLoc::GetLocCorrectionParams() const {
+    LocCorrectionParams params;
+    params.correction_suspended = correction_suspended_.load();
+    params.reject_threshold_xy = reject_threshold_xy_.load();
+    params.reject_threshold_yaw = reject_threshold_yaw_.load();
+    return params;
+}
+
 void LidarLoc::Align(const CloudPtr& input) {
     // 输入必须非空
     assert(input != nullptr);

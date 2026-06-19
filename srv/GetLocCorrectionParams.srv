@@ -1,0 +1,6 @@
+---
+bool success
+string message
+bool correction_suspended
+float64 reject_threshold_xy
+float64 reject_threshold_yaw
